@@ -62,7 +62,10 @@ def is_similar_color(color1, color2, tolerance=30):
 
 def auto_crop_smart(image_path, output_path):
     """
-    Pametno cropuje sliku uklanjajući pozadinu sa 5px padding
+    Tight crop sa minimalnim padding-om:
+    - Samo 5px padding na svim stranama
+    - Cropuje skoro do objekta
+    - Radi sa transparent i belim pozadinama
     """
     try:
         print(f"Processing image: {image_path}")
@@ -79,7 +82,7 @@ def auto_crop_smart(image_path, output_path):
         print(f"Original size: {img.size}")
         width, height = img.size
         
-        # Prvo pokušaj standardni alpha crop
+        # Prvo pokušaj alpha-based crop za transparent slike
         alpha = img.split()[-1]  # Alpha kanal
         bbox_alpha = alpha.getbbox()
         
@@ -87,17 +90,18 @@ def auto_crop_smart(image_path, output_path):
         if bbox_alpha and (bbox_alpha[2] - bbox_alpha[0] < width or bbox_alpha[3] - bbox_alpha[1] < height):
             print(f"Using alpha-based crop: {bbox_alpha}")
             
-            # Dodaj 5px padding
+            # Minimal padding: samo 5px na svim stranama
             padded_bbox = (
-                max(0, bbox_alpha[0] - 5),
-                max(0, bbox_alpha[1] - 5), 
-                min(width, bbox_alpha[2] + 5),
-                min(height, bbox_alpha[3] + 5)
+                max(0, bbox_alpha[0] - 5),    # levo - 5px
+                max(0, bbox_alpha[1] - 5),    # gore - 5px
+                min(width, bbox_alpha[2] + 5),     # desno + 5px
+                min(height, bbox_alpha[3] + 5)     # dole + 5px
             )
             
             cropped = img.crop(padded_bbox)
-            print(f"Alpha cropped with 5px padding: {padded_bbox}")
+            print(f"Alpha cropped with minimal padding (5px): {padded_bbox}")
             print(f"Final size: {cropped.size}")
+            
         else:
             print("Alpha crop not effective, trying color-based crop")
             
@@ -109,6 +113,12 @@ def auto_crop_smart(image_path, output_path):
                 cropped = img
             else:
                 # Kreiraj masku na osnovu sličnosti sa background bojom
+                # Povećana tolerancija za bolje hvatanje belih/svetlih pozadina
+                tolerance = 50
+                if all(c > 200 for c in bg_color[:3]):  # Ako je svetla pozadina
+                    tolerance = 70
+                    print(f"Light background detected, increased tolerance to {tolerance}")
+                
                 mask = Image.new('L', (width, height), 0)
                 mask_data = []
                 
@@ -120,7 +130,7 @@ def auto_crop_smart(image_path, output_path):
                         pixel_rgb = pixel[:3] if len(pixel) >= 3 else pixel
                         
                         # Ako piksel nije sličan pozadini, dodaj ga u masku
-                        if not is_similar_color(pixel_rgb, bg_color, tolerance=50):
+                        if not is_similar_color(pixel_rgb, bg_color, tolerance=tolerance):
                             mask_data.append(255)  # Čuva piksel
                         else:
                             mask_data.append(0)    # Uklanja piksel
@@ -133,31 +143,53 @@ def auto_crop_smart(image_path, output_path):
                 if bbox_color:
                     print(f"Color-based crop box: {bbox_color}")
                     
-                    # Dodaj 5px padding
+                    # Minimal padding: samo 5px na svim stranama
                     padded_bbox = (
-                        max(0, bbox_color[0] - 5),
-                        max(0, bbox_color[1] - 5),
-                        min(width, bbox_color[2] + 5),
-                        min(height, bbox_color[3] + 5)
+                        max(0, bbox_color[0] - 5),     # levo - 5px
+                        max(0, bbox_color[1] - 5),     # gore - 5px
+                        min(width, bbox_color[2] + 5),      # desno + 5px
+                        min(height, bbox_color[3] + 5)      # dole + 5px
                     )
                     
                     cropped = img.crop(padded_bbox)
-                    print(f"Color cropped with 5px padding: {padded_bbox}")
+                    print(f"Color cropped with minimal padding (5px): {padded_bbox}")
                     print(f"Final size: {cropped.size}")
                 else:
                     print("No significant content found, using original")
                     cropped = img
         
-        # Sačuvaj cropovanu sliku
+        # Sačuvaj cropovanu sliku bez dodatnog centriranja
         # Zadrži originalni format ako je moguće
         if original_mode == 'RGB' and cropped.mode == 'RGBA':
-            # Konvertuj nazad u RGB ako je original bio RGB
+            # Konvertuj nazad u RGB sa belom pozadinom
+            background = Image.new('RGB', cropped.size, (255, 255, 255))
+            background.paste(cropped, mask=cropped.split()[-1])
+            cropped = background
+            print("Converted back to RGB with white background")
+        elif original_mode == 'P' and cropped.mode == 'RGBA':
+            # Za palette mode, konvertuj u RGB
+            background = Image.new('RGB', cropped.size, (255, 255, 255))
+            background.paste(cropped, mask=cropped.split()[-1])
+            cropped = background
+            print("Converted to RGB from palette mode")
+        
+        # Sačuvaj u odgovarajućem formatu
+        save_format = 'PNG' if original_mode in ['RGBA', 'LA', 'P'] else 'JPEG'
+        if save_format == 'JPEG' and cropped.mode == 'RGBA':
+            # JPEG ne podržava transparentnost
             background = Image.new('RGB', cropped.size, (255, 255, 255))
             background.paste(cropped, mask=cropped.split()[-1])
             cropped = background
         
-        cropped.save(output_path, 'PNG')
-        print(f"Saved cropped image to: {output_path}")
+        # Optimizacija kvaliteta
+        save_kwargs = {}
+        if save_format == 'JPEG':
+            save_kwargs = {'quality': 95, 'optimize': True}
+        elif save_format == 'PNG':
+            save_kwargs = {'optimize': True}
+        
+        cropped.save(output_path, save_format, **save_kwargs)
+        print(f"Saved cropped image to: {output_path} (format: {save_format})")
         
         return True
         
