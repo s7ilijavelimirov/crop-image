@@ -1,0 +1,1 @@
+Wordpress plugin - Crop image for woocmmerce
