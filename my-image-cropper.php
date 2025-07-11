@@ -2,8 +2,8 @@
 
 /**
  * Plugin Name: Bulk Image Cropper for WooCommerce
- * Description: Bulk crop main product images (parent + variations) - Simple & Clean
- * Version: 1.0
+ * Description: Bulk crop main product images (parent + variations) with preview/commit system
+ * Version: 1.1
  * Author: S7Code&Design
  */
 
@@ -28,10 +28,15 @@ class BulkImageCropper
         add_action('wp_ajax_crop_with_padding', array($this, 'crop_with_padding_ajax'));
         add_action('wp_ajax_restore_image_backup', array($this, 'restore_image_backup_ajax'));
         add_action('wp_ajax_get_backup_status', array($this, 'get_backup_status_ajax'));
+        
+        // Preview/Commit system
+        add_action('wp_ajax_preview_crop', array($this, 'preview_crop_ajax'));
+        add_action('wp_ajax_commit_preview', array($this, 'commit_preview_ajax'));
+        add_action('wp_ajax_discard_preview', array($this, 'discard_preview_ajax'));
+        
         register_activation_hook(__FILE__, array($this, 'activate_plugin'));
         register_deactivation_hook(__FILE__, array($this, 'deactivate_plugin'));
 
-        // Add AJAX timeout handling
         add_action('wp_ajax_heartbeat', array($this, 'heartbeat_received'), 10, 2);
     }
 
@@ -39,29 +44,28 @@ class BulkImageCropper
     {
         $upload_dir = wp_upload_dir();
         $cropped_dir = $upload_dir['basedir'] . '/cropped-images';
+        $preview_dir = $upload_dir['basedir'] . '/crop-previews';
 
         if (!file_exists($cropped_dir)) {
             wp_mkdir_p($cropped_dir);
         }
+        
+        if (!file_exists($preview_dir)) {
+            wp_mkdir_p($preview_dir);
+        }
 
-        // Server već ima dobre postavke, samo log
-        error_log('Bulk Image Cropper v1.0 aktiviran - Server: ' . ini_get('memory_limit') . ' memorije, ' . ini_get('max_execution_time') . 's vremena');
-
+        error_log('Bulk Image Cropper v1.1 aktiviran - Server: ' . ini_get('memory_limit') . ' memorije, ' . ini_get('max_execution_time') . 's vremena');
         add_option('bulk_image_cropper_activated', true);
     }
 
     public function deactivate_plugin()
     {
-        // Clean up options
         delete_option('bulk_image_cropper_activated');
-
-        // Log deactivation
-        error_log('Bulk Image Cropper v1.0 deactivated');
+        error_log('Bulk Image Cropper v1.1 deactivated');
     }
 
     public function heartbeat_received($response, $data)
     {
-        // Keep session alive during long operations
         if (isset($data['bulk_cropper_heartbeat'])) {
             $response['bulk_cropper_heartbeat'] = 'alive';
         }
@@ -88,9 +92,9 @@ class BulkImageCropper
         }
 
         wp_enqueue_script('jquery');
-        wp_enqueue_script('heartbeat'); // For keeping connection alive
-        wp_enqueue_script('bulk-cropper-js', plugin_dir_url(__FILE__) . 'bulk-admin.js', array('jquery', 'heartbeat'), '1.0', true);
-        wp_enqueue_style('bulk-cropper-css', plugin_dir_url(__FILE__) . 'bulk-admin.css', array(), '1.0');
+        wp_enqueue_script('heartbeat');
+        wp_enqueue_script('bulk-cropper-js', plugin_dir_url(__FILE__) . 'bulk-admin.js', array('jquery', 'heartbeat'), '1.1', true);
+        wp_enqueue_style('bulk-cropper-css', plugin_dir_url(__FILE__) . 'bulk-admin.css', array(), '1.1');
 
         wp_localize_script('bulk-cropper-js', 'ajax_object', array(
             'ajax_url' => admin_url('admin-ajax.php'),
@@ -99,7 +103,54 @@ class BulkImageCropper
             'memory_limit' => ini_get('memory_limit') ?: '128M'
         ));
     }
-    // 2. NOVA AJAX FUNKCIJA - CROP SA PADDING-OM
+
+    // PREVIEW CROP - ne diramo original
+    public function preview_crop_ajax() {
+        check_ajax_referer('bulk_cropper_nonce', 'nonce');
+        
+        set_time_limit(60);
+        if (function_exists('wp_raise_memory_limit')) {
+            wp_raise_memory_limit();
+        }
+        
+        $image_id = intval($_POST['image_id']);
+        $padding = intval($_POST['padding'] ?? 10);
+        $padding = max(0, min($padding, 100));
+        
+        $result = $this->create_preview_crop($image_id, $padding);
+        
+        if ($result['success']) {
+            wp_send_json_success($result);
+        } else {
+            wp_send_json_error($result);
+        }
+    }
+
+    // COMMIT PREVIEW - sacuvaj preview kao original
+    public function commit_preview_ajax() {
+        check_ajax_referer('bulk_cropper_nonce', 'nonce');
+        
+        $image_id = intval($_POST['image_id']);
+        $result = $this->commit_preview_to_original($image_id);
+        
+        if ($result['success']) {
+            $this->clear_image_caches($image_id);
+            wp_send_json_success($result);
+        } else {
+            wp_send_json_error($result);
+        }
+    }
+
+    // DISCARD PREVIEW - obriši preview
+    public function discard_preview_ajax() {
+        check_ajax_referer('bulk_cropper_nonce', 'nonce');
+        
+        $image_id = intval($_POST['image_id']);
+        $result = $this->discard_preview($image_id);
+        
+        wp_send_json_success($result);
+    }
+
     public function crop_with_padding_ajax()
     {
         check_ajax_referer('bulk_cropper_nonce', 'nonce');
@@ -110,10 +161,8 @@ class BulkImageCropper
         }
 
         $image_id = intval($_POST['image_id']);
-        $padding = intval($_POST['padding'] ?? 10); // Default 10px
-
-        // Validacija padding-a
-        $padding = max(0, min($padding, 100)); // 0-100px
+        $padding = intval($_POST['padding'] ?? 10);
+        $padding = max(0, min($padding, 100));
 
         $result = $this->crop_image_by_id($image_id, $padding);
 
@@ -125,7 +174,6 @@ class BulkImageCropper
         }
     }
 
-    // 3. NOVA AJAX FUNKCIJA - RESTORE BACKUP
     public function restore_image_backup_ajax()
     {
         check_ajax_referer('bulk_cropper_nonce', 'nonce');
@@ -141,7 +189,6 @@ class BulkImageCropper
         }
     }
 
-    // 4. NOVA AJAX FUNKCIJA - PROVERI BACKUP STATUS
     public function get_backup_status_ajax()
     {
         check_ajax_referer('bulk_cropper_nonce', 'nonce');
@@ -162,18 +209,17 @@ class BulkImageCropper
 
         wp_send_json_success($backup_status);
     }
+
     public function admin_page()
     {
 ?>
         <div class="wrap">
-            <h1>🚀 Bulk Image Cropper v1.0 - Jednostavan i Čist</h1>
-            <p>Kropovanje glavnih slika proizvoda (roditelj + varijacije)</p>
+            <h1>🚀 Bulk Image Cropper v1.1 - Preview & Commit System</h1>
+            <p>Crop preview mode: Test different padding values before committing changes</p>
 
             <div class="bulk-cropper-container">
 
-                <!-- Top Row: Category + Actions -->
                 <div class="top-row">
-                    <!-- Category Selection -->
                     <div class="section category-section">
                         <h2>📁 Kategorija:</h2>
                         <div class="category-controls">
@@ -181,14 +227,18 @@ class BulkImageCropper
                                 <option value="">Učitavanje kategorija...</option>
                             </select>
                             <button id="load-category-products" class="button button-primary" disabled>Učitaj Proizvode</button>
+
+                            <div class="search-controls">
+                                <input type="text" id="search-products" placeholder="Pretraži proizvode po nazivu..." style="width: 250px; padding: 6px 8px;">
+                                <button id="clear-search" class="button button-secondary" style="display: none;">✕</button>
+                            </div>
+
                             <button id="reset-plugin" class="button button-secondary">🔄 Resetuj Sve</button>
                             <span class="loading" id="category-loading" style="display: none;">Učitavanje...</span>
-
                         </div>
                         <div id="category-info"></div>
                     </div>
 
-                    <!-- Live Progress & Results -->
                     <div class="section progress-results-section">
                         <div id="live-progress" style="display: none;">
                             <h3>🔄 Trenutni Progres</h3>
@@ -205,14 +255,11 @@ class BulkImageCropper
                     </div>
                 </div>
 
-                <!-- Main Content Row -->
                 <div class="main-row">
-                    <!-- Products Column -->
                     <div class="products-column">
                         <div class="section">
                             <h2>🛍️ Proizvodi <span id="product-count"></span></h2>
 
-                            <!-- Compact Pagination -->
                             <div class="compact-pagination">
                                 <button id="prev-page" class="button-small" disabled>← Prev</button>
                                 <span id="page-info">Page 1 of 1</span>
@@ -227,7 +274,6 @@ class BulkImageCropper
                             <div id="products-grid"></div>
                         </div>
 
-                        <!-- Selected Products Summary -->
                         <div class="section selected-summary" style="display: none;">
                             <h3>✅ Izabrani Proizvodi</h3>
                             <div class="selected-products-controls">
@@ -239,14 +285,11 @@ class BulkImageCropper
                         </div>
                     </div>
 
-                    <!-- Images Column -->
                     <div class="images-column">
                         <div class="section">
                             <h2>🎯 Glavne Slike za Kropovanje</h2>
-                            <p><em>Samo glavne/istaknute slike (roditelj + varijacije)</em></p>
+                            <p><em>Preview mode: Test → Preview → Save (individual padding control per image)</em></p>
 
-
-                            <!-- Enhanced Crop Controls -->
                             <div class="crop-controls">
                                 <div class="selection-controls">
                                     <button id="select-all-images" class="button-small">Sve</button>
@@ -254,9 +297,8 @@ class BulkImageCropper
                                     <span id="selected-count">0 selected</span>
                                 </div>
 
-                                <!-- NOVO: PADDING KONTROLA -->
                                 <div class="padding-controls">
-                                    <label for="padding-input">Padding:</label>
+                                    <label for="padding-input">Global Padding:</label>
                                     <input type="number" id="padding-input" value="10" min="0" max="100" style="width:60px;"> px
                                     <button id="crop-with-padding" class="button button-secondary" disabled>🎯 Crop sa Padding</button>
                                 </div>
@@ -269,7 +311,6 @@ class BulkImageCropper
                     </div>
                 </div>
 
-                <!-- Detailed Progress (Hidden by default) -->
                 <div class="section" id="detailed-progress-section" style="display: none;">
                     <h2>📈 Detaljan Progres</h2>
                     <div class="progress-bar">
@@ -280,7 +321,6 @@ class BulkImageCropper
                     <button id="toggle-detailed-log" class="button button-small">Prikaži/Sakrij Log</button>
                 </div>
 
-                <!-- Cropped Images Results -->
                 <div class="section" id="cropped-images-section" style="display: none;">
                     <h2>🖼️ Rezultati Kropovanih Slika</h2>
                     <div id="cropped-images-grid"></div>
@@ -294,16 +334,12 @@ class BulkImageCropper
     public function reset_plugin_state_ajax()
     {
         check_ajax_referer('bulk_cropper_nonce', 'nonce');
-
-        // Just return success - frontend will handle the reset
         wp_send_json_success(array('message' => 'Plugin state reset'));
     }
 
     public function get_product_categories_ajax()
     {
         check_ajax_referer('bulk_cropper_nonce', 'nonce');
-
-        // Set timeout for long operations
         set_time_limit(0);
 
         $categories = get_terms(array(
@@ -311,12 +347,10 @@ class BulkImageCropper
             'hide_empty' => true,
             'orderby' => 'name',
             'order' => 'ASC',
-            'number' => 200 // Limit to prevent memory issues
+            'number' => 200
         ));
 
         $categories_data = array();
-
-        // Add "All Categories" option
         $categories_data[] = array(
             'id' => 'all',
             'name' => 'All Categories',
@@ -340,24 +374,23 @@ class BulkImageCropper
     {
         check_ajax_referer('bulk_cropper_nonce', 'nonce');
 
-        // Production optimizations
         set_time_limit(60);
         if (function_exists('wp_raise_memory_limit')) {
             wp_raise_memory_limit();
         }
 
         $category_id = sanitize_text_field($_POST['category_id'] ?? '');
+        $search_term = sanitize_text_field($_POST['search_term'] ?? '');
         $page = intval($_POST['page'] ?? 1);
-        $per_page = min(intval($_POST['per_page'] ?? 50), 100); // Max 100 for safety
+        $per_page = min(intval($_POST['per_page'] ?? 50), 100);
         $offset = ($page - 1) * $per_page;
 
-        // Optimized query with minimal data
         $args = array(
             'post_type' => 'product',
             'post_status' => 'publish',
             'posts_per_page' => $per_page,
             'offset' => $offset,
-            'fields' => 'ids', // Only get IDs first
+            'fields' => 'ids',
             'no_found_rows' => false,
             'update_post_meta_cache' => false,
             'update_post_term_cache' => false,
@@ -369,7 +402,10 @@ class BulkImageCropper
             )
         );
 
-        // Add category filter
+        if (!empty($search_term)) {
+            $args['s'] = $search_term;
+        }
+
         if ($category_id !== 'all' && !empty($category_id)) {
             $args['tax_query'] = array(
                 array(
@@ -386,14 +422,12 @@ class BulkImageCropper
 
         $products_data = array();
 
-        // Batch load products for better performance
         foreach ($product_ids as $product_id) {
             $product_obj = wc_get_product($product_id);
             if (!$product_obj) continue;
 
             $thumbnail_id = $product_obj->get_image_id();
 
-            // Count main variation images only
             $variation_images_count = 0;
             if ($product_obj->is_type('variable')) {
                 $variations = $product_obj->get_children();
@@ -403,7 +437,6 @@ class BulkImageCropper
                 }));
             }
 
-            // Only count main images (parent + variations)
             $total_images = ($thumbnail_id ? 1 : 0) + $variation_images_count;
 
             if ($total_images > 0) {
@@ -415,7 +448,8 @@ class BulkImageCropper
                     'thumbnail_url' => wp_get_attachment_image_url($thumbnail_id, 'thumbnail'),
                     'edit_url' => admin_url('post.php?post=' . $product_id . '&action=edit'),
                     'type' => $product_obj->get_type(),
-                    'price' => $product_obj->get_price_html()
+                    'price' => $product_obj->get_price_html(),
+                    'sku' => $product_obj->get_sku()
                 );
             }
         }
@@ -430,7 +464,8 @@ class BulkImageCropper
                 'per_page' => $per_page,
                 'total_products' => $total_products,
                 'showing' => count($products_data)
-            )
+            ),
+            'search_term' => $search_term
         ));
     }
 
@@ -438,7 +473,6 @@ class BulkImageCropper
     {
         check_ajax_referer('bulk_cropper_nonce', 'nonce');
 
-        // Production timeout settings
         set_time_limit(120);
         if (function_exists('wp_raise_memory_limit')) {
             wp_raise_memory_limit();
@@ -450,13 +484,11 @@ class BulkImageCropper
             wp_send_json_error('No product IDs provided');
         }
 
-        // Limit batch size for safety
         if (count($product_ids) > 20) {
             $product_ids = array_slice($product_ids, 0, 20);
         }
 
         $all_images = array();
-        $processed_count = 0;
 
         foreach ($product_ids as $product_id) {
             $product = wc_get_product($product_id);
@@ -465,12 +497,10 @@ class BulkImageCropper
             $thumbnail_id = $product->get_image_id();
             $product_image_ids = array();
 
-            // Add main product image
             if ($thumbnail_id) {
                 $product_image_ids[] = $thumbnail_id;
             }
 
-            // Add main variation images only (no galleries)
             if ($product->is_type('variable')) {
                 $variations = $product->get_children();
                 foreach ($variations as $variation_id) {
@@ -496,7 +526,6 @@ class BulkImageCropper
                     if ($image_id == $thumbnail_id) {
                         $badge_text = 'Main';
                     } else {
-                        // Check if it's a variation image
                         if ($product->is_type('variable')) {
                             $variations = $product->get_children();
                             foreach ($variations as $variation_id) {
@@ -522,8 +551,6 @@ class BulkImageCropper
                     );
                 }
             }
-
-            $processed_count++;
         }
 
         wp_send_json_success(array(
@@ -537,7 +564,6 @@ class BulkImageCropper
     {
         check_ajax_referer('bulk_cropper_nonce', 'nonce');
 
-        // Production settings
         set_time_limit(60);
         if (function_exists('wp_raise_memory_limit')) {
             wp_raise_memory_limit();
@@ -546,7 +572,6 @@ class BulkImageCropper
         $image_id = intval($_POST['image_id']);
         $result = $this->crop_image_by_id($image_id);
 
-        // Clear all caches for this image
         if ($result['success']) {
             $this->clear_image_caches($image_id);
         }
@@ -562,7 +587,6 @@ class BulkImageCropper
     {
         check_ajax_referer('bulk_cropper_nonce', 'nonce');
 
-        // Extended timeout for batch processing
         set_time_limit(0);
         if (function_exists('wp_raise_memory_limit')) {
             wp_raise_memory_limit();
@@ -570,7 +594,6 @@ class BulkImageCropper
 
         $image_ids = array_map('intval', $_POST['image_ids']);
 
-        // Safety limit for production
         if (count($image_ids) > 50) {
             wp_send_json_error('Too many images selected. Please select maximum 50 images at once.');
         }
@@ -579,7 +602,7 @@ class BulkImageCropper
         $success_count = 0;
         $error_count = 0;
 
-        foreach ($image_ids as $index => $image_id) {
+        foreach ($image_ids as $image_id) {
             $result = $this->crop_image_by_id($image_id);
             $results[] = $result;
 
@@ -601,7 +624,131 @@ class BulkImageCropper
         ));
     }
 
-    // 5. MODIFIKUJ POSTOJEĆU crop_image_by_id FUNKCIJU
+    // KREIRAJ PREVIEW (ne diramo original!)
+    private function create_preview_crop($image_id, $padding = 10) {
+        $image_path = get_attached_file($image_id);
+        
+        if (!$image_path || !file_exists($image_path)) {
+            return array(
+                'success' => false,
+                'message' => 'Image file not found'
+            );
+        }
+        
+        $backup_path = $image_path . '.backup';
+        if (!file_exists($backup_path)) {
+            copy($image_path, $backup_path);
+        }
+        
+        $upload_dir = wp_upload_dir();
+        $preview_dir = $upload_dir['basedir'] . '/crop-previews';
+        if (!file_exists($preview_dir)) {
+            wp_mkdir_p($preview_dir);
+        }
+        
+        $preview_path = $preview_dir . '/preview_' . $image_id . '_' . $padding . 'px.jpg';
+        
+        $python_path = $this->get_python_path();
+        $script_path = plugin_dir_path(__FILE__) . 'cropper.py';
+        
+        $command = escapeshellcmd($python_path . ' ' . $script_path . ' ' .
+            escapeshellarg($image_path) . ' ' .
+            escapeshellarg($preview_path) . ' ' .
+            intval($padding));
+        
+        exec($command . ' 2>&1', $output, $return_var);
+        $log_output = implode("\n", $output);
+        
+        if ($return_var === 0 && file_exists($preview_path)) {
+            $preview_url = $upload_dir['baseurl'] . '/crop-previews/' . basename($preview_path) . '?v=' . time();
+            $preview_size = getimagesize($preview_path);
+            $preview_dimensions = $preview_size ? $preview_size[0] . 'x' . $preview_size[1] : 'Unknown';
+            
+            return array(
+                'success' => true,
+                'image_id' => $image_id,
+                'message' => "Preview created with {$padding}px padding",
+                'preview_url' => $preview_url,
+                'preview_path' => $preview_path,
+                'preview_size' => $preview_dimensions,
+                'padding_used' => $padding,
+                'log' => $log_output,
+                'has_backup' => file_exists($backup_path)
+            );
+        } else {
+            return array(
+                'success' => false,
+                'image_id' => $image_id,
+                'message' => 'Preview creation failed: ' . $log_output,
+                'return_code' => $return_var
+            );
+        }
+    }
+
+    // COMMIT PREVIEW TO ORIGINAL
+    private function commit_preview_to_original($image_id) {
+        $image_path = get_attached_file($image_id);
+        $upload_dir = wp_upload_dir();
+        $preview_dir = $upload_dir['basedir'] . '/crop-previews';
+        
+        $preview_files = glob($preview_dir . '/preview_' . $image_id . '_*.jpg');
+        
+        if (empty($preview_files)) {
+            return array(
+                'success' => false,
+                'message' => 'No preview found to commit'
+            );
+        }
+        
+        $latest_preview = array_reduce($preview_files, function($latest, $current) {
+            return (filemtime($current) > filemtime($latest)) ? $current : $latest;
+        }, $preview_files[0]);
+        
+        if (copy($latest_preview, $image_path)) {
+            $this->regenerate_image_sizes($image_id);
+            $image_meta = wp_get_attachment_metadata($image_id);
+            
+            foreach ($preview_files as $preview_file) {
+                unlink($preview_file);
+            }
+            
+            return array(
+                'success' => true,
+                'image_id' => $image_id,
+                'message' => 'Preview committed successfully',
+                'new_size' => isset($image_meta['width']) ? $image_meta['width'] . 'x' . $image_meta['height'] : 'Unknown',
+                'committed_url' => wp_get_attachment_image_url($image_id, 'full') . '?v=' . time()
+            );
+        } else {
+            return array(
+                'success' => false,
+                'message' => 'Failed to commit preview'
+            );
+        }
+    }
+
+    // DISCARD PREVIEW
+    private function discard_preview($image_id) {
+        $upload_dir = wp_upload_dir();
+        $preview_dir = $upload_dir['basedir'] . '/crop-previews';
+        
+        $preview_files = glob($preview_dir . '/preview_' . $image_id . '_*.jpg');
+        $deleted_count = 0;
+        
+        foreach ($preview_files as $preview_file) {
+            if (unlink($preview_file)) {
+                $deleted_count++;
+            }
+        }
+        
+        return array(
+            'success' => true,
+            'image_id' => $image_id,
+            'message' => "Discarded {$deleted_count} preview(s)",
+            'deleted_count' => $deleted_count
+        );
+    }
+
     private function crop_image_by_id($image_id, $padding = 5)
     {
         $image_path = get_attached_file($image_id);
@@ -625,7 +772,6 @@ class BulkImageCropper
             );
         }
 
-        // Create backup
         $backup_path = $image_path . '.backup';
         if (!file_exists($backup_path)) {
             copy($image_path, $backup_path);
@@ -633,11 +779,10 @@ class BulkImageCropper
 
         $temp_cropped = $image_path . '.temp_cropped.png';
 
-        // DODAJ PADDING PARAMETAR U PYTHON KOMANDU
         $command = escapeshellcmd($python_path . ' ' . $script_path . ' ' .
             escapeshellarg($image_path) . ' ' .
             escapeshellarg($temp_cropped) . ' ' .
-            intval($padding)); // NOVI PARAMETAR
+            intval($padding));
 
         exec($command . ' 2>&1', $output, $return_var);
         $log_output = implode("\n", $output);
@@ -674,7 +819,7 @@ class BulkImageCropper
             );
         }
     }
-    // 6. NOVA FUNKCIJA - RESTORE IZ BACKUP-A
+
     private function restore_from_backup($image_id)
     {
         $image_path = get_attached_file($image_id);
@@ -696,7 +841,6 @@ class BulkImageCropper
             );
         }
 
-        // Restore backup to original
         if (copy($backup_path, $image_path)) {
             $this->regenerate_image_sizes($image_id);
             $image_meta = wp_get_attachment_metadata($image_id);
@@ -716,15 +860,13 @@ class BulkImageCropper
             );
         }
     }
+
     private function clear_image_caches($image_id)
     {
-        // Clear WordPress caches
         wp_cache_delete($image_id, 'posts');
         clean_attachment_cache($image_id);
 
-        // Clear WooCommerce caches if available
         if (function_exists('wc_delete_product_transients')) {
-            // Find products that use this image
             global $wpdb;
             $products = $wpdb->get_col($wpdb->prepare("
                 SELECT post_id FROM {$wpdb->postmeta} 
@@ -743,7 +885,6 @@ class BulkImageCropper
         $image_path = get_attached_file($image_id);
         if (!$image_path) return false;
 
-        // Force regeneration
         $metadata = wp_generate_attachment_metadata($image_id, $image_path);
         wp_update_attachment_metadata($image_id, $metadata);
 
@@ -752,7 +893,6 @@ class BulkImageCropper
 
     private function get_python_path()
     {
-        // Try different Python paths for production compatibility
         $paths = array('python3', 'python', '/usr/bin/python3', '/usr/bin/python');
 
         foreach ($paths as $path) {
@@ -763,7 +903,7 @@ class BulkImageCropper
             }
         }
 
-        return 'python'; // Fallback
+        return 'python';
     }
 }
 
