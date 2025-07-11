@@ -126,6 +126,7 @@ jQuery(document).ready(function ($) {
                 selectedImages = selectedImages.filter(id => id !== imageId);
             }
             updateSelectedImagesDisplay();
+            updatePaddingControls(); // DODANO
         });
 
         $('#select-all-images').on('click', function () {
@@ -136,7 +137,7 @@ jQuery(document).ready(function ($) {
             $('.image-checkbox').prop('checked', false).trigger('change');
         });
 
-        // Cropping
+        // Standard cropping (5px)
         $(document).on('click', '.crop-single', function () {
             if (isProcessing) {
                 showNotification('⚠️ Please wait for current operation to complete', 'warning');
@@ -163,11 +164,56 @@ jQuery(document).ready(function ($) {
                 return;
             }
 
-            if (!confirm('Crop ' + selectedImages.length + ' selected MAIN images? This will modify the original files and cannot be undone.')) {
+            if (!confirm('Crop ' + selectedImages.length + ' selected MAIN images with 5px padding? This will modify the original files and cannot be undone.')) {
                 return;
             }
 
             startBulkCrop();
+        });
+
+        // Enhanced cropping with custom padding
+        $('#crop-with-padding').on('click', function () {
+            if (isProcessing) {
+                showNotification('⚠️ Please wait for current operation to complete', 'warning');
+                return;
+            }
+            
+            if (selectedImages.length === 0) {
+                showNotification('❌ Please select images to crop', 'error');
+                return;
+            }
+
+            if (selectedImages.length > 20) {
+                showNotification('❌ Maximum 20 images per batch for padding crop.', 'error');
+                return;
+            }
+
+            let padding = parseInt($('#padding-input').val()) || 10;
+            if (padding < 0 || padding > 100) {
+                showNotification('❌ Padding must be between 0-100px', 'error');
+                return;
+            }
+
+            if (!confirm('Crop ' + selectedImages.length + ' images with ' + padding + 'px padding? This will modify the original files.')) {
+                return;
+            }
+
+            startBulkCropWithPadding(padding);
+        });
+
+        // Restore individual images
+        $(document).on('click', '.restore-backup', function () {
+            if (isProcessing) {
+                showNotification('⚠️ Please wait for current operation to complete', 'warning');
+                return;
+            }
+            
+            let imageId = $(this).data('image-id');
+            if (!confirm('Restore image ' + imageId + ' from backup? This will replace current cropped version.')) {
+                return;
+            }
+            
+            restoreImageFromBackup(imageId, $(this));
         });
 
         // Toggle detailed log
@@ -406,6 +452,7 @@ jQuery(document).ready(function ($) {
         $('.selected-summary').hide();
         updateSelectedProductsDisplay();
         updateSelectedImagesDisplay();
+        updatePaddingControls();
         
         showNotification('✅ All selections cleared', 'success');
     }
@@ -515,6 +562,52 @@ jQuery(document).ready(function ($) {
         let count = selectedImages.length;
         $('#selected-count').text(count + ' selected');
         $('#crop-selected').prop('disabled', count === 0 || isProcessing);
+        $('#crop-with-padding').prop('disabled', count === 0 || isProcessing); // DODANO
+    }
+
+    function updatePaddingControls() {
+        let count = selectedImages.length;
+        $('#crop-with-padding').prop('disabled', count === 0 || isProcessing);
+        
+        // Load backup status for selected images
+        if (count > 0) {
+            loadBackupStatus(selectedImages);
+        }
+    }
+
+    function loadBackupStatus(imageIds) {
+        $.ajax({
+            url: ajax_object.ajax_url,
+            type: 'POST',
+            data: {
+                action: 'get_backup_status',
+                image_ids: imageIds,
+                nonce: ajax_object.nonce
+            },
+            success: function (response) {
+                if (response.success) {
+                    updateBackupButtons(response.data);
+                }
+            }
+        });
+    }
+
+    function updateBackupButtons(backupStatus) {
+        Object.keys(backupStatus).forEach(function (imageId) {
+            let imageItem = $('.image-item[data-image-id="' + imageId + '"]');
+            let actionsDiv = imageItem.find('.image-actions');
+            
+            // Remove existing restore button
+            actionsDiv.find('.restore-backup').remove();
+            
+            if (backupStatus[imageId].has_backup) {
+                let backupDate = new Date(backupStatus[imageId].backup_date).toLocaleDateString();
+                actionsDiv.append(
+                    '<button class="button button-small restore-backup" data-image-id="' + imageId + '" ' +
+                    'title="Backup from ' + backupDate + '">🔄 Restore</button>'
+                );
+            }
+        });
     }
 
     function updateLiveProgress(current, total, message) {
@@ -561,6 +654,9 @@ jQuery(document).ready(function ($) {
                     
                     // Add to cropped images display
                     addCroppedImageToResults(response.data);
+                    
+                    // Update backup status
+                    loadBackupStatus([imageId]);
                     
                     setTimeout(function() {
                         $('#live-progress').fadeOut();
@@ -660,9 +756,82 @@ jQuery(document).ready(function ($) {
         processNext();
     }
 
+    function startBulkCropWithPadding(padding) {
+        isProcessing = true;
+        $('#detailed-progress-section').show();
+        $('#crop-with-padding').prop('disabled', true).text('🔄 Cropping with ' + padding + 'px...');
+
+        // Scroll to progress section smoothly
+        $('html, body').animate({
+            scrollTop: $('#detailed-progress-section').offset().top - 100
+        }, 800);
+
+        updateLiveProgress(0, 100, 'Starting bulk crop with ' + padding + 'px padding...');
+        $('#live-progress').show();
+
+        let total = selectedImages.length;
+        let completed = 0;
+        let results = [];
+        let successCount = 0;
+        let errorCount = 0;
+
+        function processNext() {
+            if (completed >= total) {
+                completeBulkCropWithPadding(results, successCount, errorCount, padding);
+                return;
+            }
+
+            let imageId = selectedImages[completed];
+            let progress = completed + 1;
+            
+            updateDetailedProgress(progress, total, 'Cropping image ID: ' + imageId + ' (padding: ' + padding + 'px)');
+            updateLiveProgress(progress, total, 'Processing ' + progress + '/' + total);
+            logProgress('🔄 Processing image ' + imageId + ' with ' + padding + 'px padding (' + progress + '/' + total + ')');
+
+            $.ajax({
+                url: ajax_object.ajax_url,
+                type: 'POST',
+                timeout: 60000,
+                data: {
+                    action: 'crop_with_padding',
+                    image_id: imageId,
+                    padding: padding,
+                    nonce: ajax_object.nonce
+                },
+                success: function (response) {
+                    if (response.success) {
+                        successCount++;
+                        refreshImagePreview(imageId);
+                        logProgress('✅ Image ' + imageId + ' cropped successfully with ' + padding + 'px padding');
+                        results.push({ ...response.data, success: true });
+                        
+                        // Add to cropped images display
+                        addCroppedImageToResults(response.data);
+                    } else {
+                        errorCount++;
+                        logProgress('❌ Image ' + imageId + ' failed: ' + (response.data?.message || 'Unknown error'), true);
+                        results.push({ ...response.data, success: false });
+                    }
+                },
+                error: function (xhr, status, error) {
+                    errorCount++;
+                    logProgress('❌ Image ' + imageId + ' error: ' + error, true);
+                    results.push({ success: false, image_id: imageId, message: 'AJAX error: ' + error });
+                },
+                complete: function () {
+                    completed++;
+                    // Delay between requests to prevent server overload
+                    setTimeout(processNext, 500);
+                }
+            });
+        }
+
+        processNext();
+    }
+
     function completeBulkCrop(results, successCount, errorCount) {
         isProcessing = false;
-        $('#crop-selected').prop('disabled', false).text('🚀 Crop Selected Images');
+        $('#crop-selected').prop('disabled', false).text('🚀 Brzi Crop (5px)');
 
         let total = results.length;
         updateDetailedProgress(total, total, 'Completed! 🎉');
@@ -678,6 +847,7 @@ jQuery(document).ready(function ($) {
             selectedImages = [];
             $('.image-checkbox').prop('checked', false);
             updateSelectedImagesDisplay();
+            updatePaddingControls();
         }
 
         // Auto-hide progress after delay
@@ -693,6 +863,94 @@ jQuery(document).ready(function ($) {
         } else {
             showNotification('❌ All crops failed. Check the detailed log for errors.', 'error');
         }
+    }
+
+    function completeBulkCropWithPadding(results, successCount, errorCount, padding) {
+        isProcessing = false;
+        $('#crop-with-padding').prop('disabled', false).text('🎯 Crop sa Padding');
+
+        let total = results.length;
+        updateDetailedProgress(total, total, 'Completed! 🎉');
+        updateLiveProgress(100, 100, 'Bulk crop with ' + padding + 'px padding completed');
+        
+        logProgress('<strong>🏁 BULK CROP WITH PADDING COMPLETED</strong>');
+        logProgress('<strong>📊 SUMMARY: ' + successCount + ' successful, ' + errorCount + ' failed out of ' + total + ' images (padding: ' + padding + 'px)</strong>');
+
+        showQuickResult('🎉 Bulk crop completed: ' + successCount + '/' + total + ' images successful (' + padding + 'px padding)');
+
+        // Clear image selection after successful bulk crop
+        if (successCount > 0) {
+            selectedImages = [];
+            $('.image-checkbox').prop('checked', false);
+            updateSelectedImagesDisplay();
+            updatePaddingControls();
+        }
+
+        // Auto-hide progress after delay
+        setTimeout(function() {
+            $('#live-progress').fadeOut();
+        }, 5000);
+
+        // Show completion notification
+        if (successCount === total) {
+            showNotification('🎉 All ' + total + ' images cropped successfully with ' + padding + 'px padding!', 'success');
+        } else if (successCount > 0) {
+            showNotification('✅ ' + successCount + ' of ' + total + ' images cropped successfully', 'success');
+        } else {
+            showNotification('❌ All crops failed. Check the detailed log for errors.', 'error');
+        }
+    }
+
+    function restoreImageFromBackup(imageId, button) {
+        isProcessing = true;
+        button.prop('disabled', true).text('Restoring...');
+        
+        updateLiveProgress(0, 100, 'Restoring image ' + imageId + ' from backup...');
+        $('#live-progress').show();
+
+        $.ajax({
+            url: ajax_object.ajax_url,
+            type: 'POST',
+            timeout: 60000,
+            data: {
+                action: 'restore_image_backup',
+                image_id: imageId,
+                nonce: ajax_object.nonce
+            },
+            success: function (response) {
+                if (response.success) {
+                    button.text('✓ Restored').addClass('cropped');
+                    updateLiveProgress(100, 100, 'Image restored successfully');
+                    showQuickResult('✅ Image ' + imageId + ' restored from backup');
+                    refreshImagePreview(imageId);
+                    
+                    // Update backup status
+                    loadBackupStatus([imageId]);
+                    
+                    setTimeout(function() {
+                        $('#live-progress').fadeOut();
+                    }, 2000);
+                } else {
+                    button.text('❌ Failed').addClass('failed');
+                    updateLiveProgress(100, 100, 'Restore failed');
+                    showQuickResult('❌ Image ' + imageId + ' restore failed: ' + (response.data?.message || 'Unknown error'), true);
+                }
+            },
+            error: function (xhr, status, error) {
+                button.text('❌ Error').addClass('failed');
+                updateLiveProgress(100, 100, 'Error occurred');
+                showQuickResult('❌ Image ' + imageId + ' restore error: ' + error, true);
+            },
+            complete: function () {
+                isProcessing = false;
+                setTimeout(function () {
+                    button.prop('disabled', false);
+                    if (!button.hasClass('cropped') && !button.hasClass('failed')) {
+                        button.text('🔄 Restore');
+                    }
+                }, 3000);
+            }
+        });
     }
 
     function addCroppedImageToResults(data) {
@@ -717,6 +975,9 @@ jQuery(document).ready(function ($) {
         html += '<div class="cropped-image-meta">ID: ' + data.image_id + '</div>';
         if (data.new_size) {
             html += '<div class="cropped-image-meta">New Size: ' + data.new_size + '</div>';
+        }
+        if (data.padding_used) {
+            html += '<div class="cropped-image-meta">Padding: ' + data.padding_used + 'px</div>';
         }
         html += '<div class="cropped-image-actions">';
         html += '<a href="' + (data.cropped_url || '') + '" target="_blank" class="button button-small">View Full</a>';

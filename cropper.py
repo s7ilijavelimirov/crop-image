@@ -60,15 +60,16 @@ def is_similar_color(color1, color2, tolerance=30):
             return False
     return True
 
-def auto_crop_smart(image_path, output_path):
+def auto_crop_smart(image_path, output_path, padding=5):
     """
-    Tight crop sa minimalnim padding-om:
-    - Samo 5px padding na svim stranama
-    - Cropuje skoro do objekta
+    Smart crop sa kontrolisanim padding-om:
+    - Variabilni padding (0-100px)
+    - Cropuje do objekta + padding
     - Radi sa transparent i belim pozadinama
     """
     try:
         print(f"Processing image: {image_path}")
+        print(f"Using padding: {padding}px")
         
         # Otvori sliku
         img = Image.open(image_path)
@@ -90,16 +91,16 @@ def auto_crop_smart(image_path, output_path):
         if bbox_alpha and (bbox_alpha[2] - bbox_alpha[0] < width or bbox_alpha[3] - bbox_alpha[1] < height):
             print(f"Using alpha-based crop: {bbox_alpha}")
             
-            # Minimal padding: samo 5px na svim stranama
+            # KONTROLISANI PADDING
             padded_bbox = (
-                max(0, bbox_alpha[0] - 5),    # levo - 5px
-                max(0, bbox_alpha[1] - 5),    # gore - 5px
-                min(width, bbox_alpha[2] + 5),     # desno + 5px
-                min(height, bbox_alpha[3] + 5)     # dole + 5px
+                max(0, bbox_alpha[0] - padding),           # levo - padding
+                max(0, bbox_alpha[1] - padding),           # gore - padding
+                min(width, bbox_alpha[2] + padding),       # desno + padding
+                min(height, bbox_alpha[3] + padding)       # dole + padding
             )
             
             cropped = img.crop(padded_bbox)
-            print(f"Alpha cropped with minimal padding (5px): {padded_bbox}")
+            print(f"Alpha cropped with {padding}px padding: {padded_bbox}")
             print(f"Final size: {cropped.size}")
             
         else:
@@ -143,16 +144,16 @@ def auto_crop_smart(image_path, output_path):
                 if bbox_color:
                     print(f"Color-based crop box: {bbox_color}")
                     
-                    # Minimal padding: samo 5px na svim stranama
+                    # KONTROLISANI PADDING
                     padded_bbox = (
-                        max(0, bbox_color[0] - 5),     # levo - 5px
-                        max(0, bbox_color[1] - 5),     # gore - 5px
-                        min(width, bbox_color[2] + 5),      # desno + 5px
-                        min(height, bbox_color[3] + 5)      # dole + 5px
+                        max(0, bbox_color[0] - padding),       # levo - padding
+                        max(0, bbox_color[1] - padding),       # gore - padding
+                        min(width, bbox_color[2] + padding),   # desno + padding
+                        min(height, bbox_color[3] + padding)   # dole + padding
                     )
                     
                     cropped = img.crop(padded_bbox)
-                    print(f"Color cropped with minimal padding (5px): {padded_bbox}")
+                    print(f"Color cropped with {padding}px padding: {padded_bbox}")
                     print(f"Final size: {cropped.size}")
                 else:
                     print("No significant content found, using original")
@@ -189,7 +190,7 @@ def auto_crop_smart(image_path, output_path):
             save_kwargs = {'optimize': True}
         
         cropped.save(output_path, save_format, **save_kwargs)
-        print(f"Saved cropped image to: {output_path} (format: {save_format})")
+        print(f"Saved cropped image to: {output_path} (format: {save_format}) with {padding}px padding")
         
         return True
         
@@ -201,11 +202,15 @@ def auto_crop_smart(image_path, output_path):
 
 def main():
     if len(sys.argv) < 3:
-        print("Usage: python cropper.py <input_image> <output_image>")
+        print("Usage: python cropper.py <input_image> <output_image> [padding]")
         sys.exit(1)
     
     input_path = sys.argv[1]
     output_path = sys.argv[2]
+    padding = int(sys.argv[3]) if len(sys.argv) > 3 else 5  # Default 5px
+    
+    # Validacija padding-a
+    padding = max(0, min(padding, 100))  # 0-100px
     
     if not os.path.exists(input_path):
         print(f"Input file does not exist: {input_path}")
@@ -216,10 +221,10 @@ def main():
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir)
     
-    success = auto_crop_smart(input_path, output_path)
+    success = auto_crop_smart(input_path, output_path, padding)
     
     if success:
-        print("Image processing completed successfully")
+        print(f"Image processing completed successfully with {padding}px padding")
         sys.exit(0)
     else:
         print("Image processing failed")

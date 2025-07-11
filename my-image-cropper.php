@@ -24,6 +24,10 @@ class BulkImageCropper
         add_action('wp_ajax_crop_selected_images', array($this, 'crop_selected_images_ajax'));
         add_action('wp_ajax_crop_single_image', array($this, 'crop_single_image_ajax'));
         add_action('wp_ajax_reset_plugin_state', array($this, 'reset_plugin_state_ajax'));
+
+        add_action('wp_ajax_crop_with_padding', array($this, 'crop_with_padding_ajax'));
+        add_action('wp_ajax_restore_image_backup', array($this, 'restore_image_backup_ajax'));
+        add_action('wp_ajax_get_backup_status', array($this, 'get_backup_status_ajax'));
         register_activation_hook(__FILE__, array($this, 'activate_plugin'));
         register_deactivation_hook(__FILE__, array($this, 'deactivate_plugin'));
 
@@ -95,7 +99,69 @@ class BulkImageCropper
             'memory_limit' => ini_get('memory_limit') ?: '128M'
         ));
     }
+    // 2. NOVA AJAX FUNKCIJA - CROP SA PADDING-OM
+    public function crop_with_padding_ajax()
+    {
+        check_ajax_referer('bulk_cropper_nonce', 'nonce');
 
+        set_time_limit(60);
+        if (function_exists('wp_raise_memory_limit')) {
+            wp_raise_memory_limit();
+        }
+
+        $image_id = intval($_POST['image_id']);
+        $padding = intval($_POST['padding'] ?? 10); // Default 10px
+
+        // Validacija padding-a
+        $padding = max(0, min($padding, 100)); // 0-100px
+
+        $result = $this->crop_image_by_id($image_id, $padding);
+
+        if ($result['success']) {
+            $this->clear_image_caches($image_id);
+            wp_send_json_success($result);
+        } else {
+            wp_send_json_error($result);
+        }
+    }
+
+    // 3. NOVA AJAX FUNKCIJA - RESTORE BACKUP
+    public function restore_image_backup_ajax()
+    {
+        check_ajax_referer('bulk_cropper_nonce', 'nonce');
+
+        $image_id = intval($_POST['image_id']);
+        $result = $this->restore_from_backup($image_id);
+
+        if ($result['success']) {
+            $this->clear_image_caches($image_id);
+            wp_send_json_success($result);
+        } else {
+            wp_send_json_error($result);
+        }
+    }
+
+    // 4. NOVA AJAX FUNKCIJA - PROVERI BACKUP STATUS
+    public function get_backup_status_ajax()
+    {
+        check_ajax_referer('bulk_cropper_nonce', 'nonce');
+
+        $image_ids = array_map('intval', $_POST['image_ids'] ?? array());
+        $backup_status = array();
+
+        foreach ($image_ids as $image_id) {
+            $image_path = get_attached_file($image_id);
+            $backup_path = $image_path . '.backup';
+
+            $backup_status[$image_id] = array(
+                'has_backup' => file_exists($backup_path),
+                'backup_size' => file_exists($backup_path) ? filesize($backup_path) : 0,
+                'backup_date' => file_exists($backup_path) ? date('Y-m-d H:i:s', filemtime($backup_path)) : null
+            );
+        }
+
+        wp_send_json_success($backup_status);
+    }
     public function admin_page()
     {
 ?>
@@ -179,14 +245,23 @@ class BulkImageCropper
                             <h2>🎯 Glavne Slike za Kropovanje</h2>
                             <p><em>Samo glavne/istaknute slike (roditelj + varijacije)</em></p>
 
-                            <!-- Crop Controls -->
+
+                            <!-- Enhanced Crop Controls -->
                             <div class="crop-controls">
                                 <div class="selection-controls">
                                     <button id="select-all-images" class="button-small">Sve</button>
                                     <button id="deselect-all-images" class="button-small">Nijedna</button>
                                     <span id="selected-count">0 selected</span>
                                 </div>
-                                <button id="crop-selected" class="button button-primary" disabled>🚀 Kropuj Izabrane Slike</button>
+
+                                <!-- NOVO: PADDING KONTROLA -->
+                                <div class="padding-controls">
+                                    <label for="padding-input">Padding:</label>
+                                    <input type="number" id="padding-input" value="10" min="0" max="100" style="width:60px;"> px
+                                    <button id="crop-with-padding" class="button button-secondary" disabled>🎯 Crop sa Padding</button>
+                                </div>
+
+                                <button id="crop-selected" class="button button-primary" disabled>🚀 Brzi Crop (5px)</button>
                             </div>
 
                             <div id="images-grid"></div>
@@ -526,7 +601,8 @@ class BulkImageCropper
         ));
     }
 
-    private function crop_image_by_id($image_id)
+    // 5. MODIFIKUJ POSTOJEĆU crop_image_by_id FUNKCIJU
+    private function crop_image_by_id($image_id, $padding = 5)
     {
         $image_path = get_attached_file($image_id);
 
@@ -557,10 +633,13 @@ class BulkImageCropper
 
         $temp_cropped = $image_path . '.temp_cropped.png';
 
-        // Enhanced command with error handling
-        $command = escapeshellcmd($python_path . ' ' . $script_path . ' ' . escapeshellarg($image_path) . ' ' . escapeshellarg($temp_cropped));
-        exec($command . ' 2>&1', $output, $return_var);
+        // DODAJ PADDING PARAMETAR U PYTHON KOMANDU
+        $command = escapeshellcmd($python_path . ' ' . $script_path . ' ' .
+            escapeshellarg($image_path) . ' ' .
+            escapeshellarg($temp_cropped) . ' ' .
+            intval($padding)); // NOVI PARAMETAR
 
+        exec($command . ' 2>&1', $output, $return_var);
         $log_output = implode("\n", $output);
 
         if ($return_var === 0 && file_exists($temp_cropped)) {
@@ -572,10 +651,12 @@ class BulkImageCropper
                 return array(
                     'success' => true,
                     'image_id' => $image_id,
-                    'message' => 'Image cropped successfully',
+                    'message' => "Image cropped successfully with {$padding}px padding",
+                    'padding_used' => $padding,
                     'new_size' => isset($image_meta['width']) ? $image_meta['width'] . 'x' . $image_meta['height'] : 'Unknown',
                     'log' => $log_output,
-                    'cropped_url' => wp_get_attachment_image_url($image_id, 'full') . '?v=' . time()
+                    'cropped_url' => wp_get_attachment_image_url($image_id, 'full') . '?v=' . time(),
+                    'has_backup' => file_exists($backup_path)
                 );
             } else {
                 return array(
@@ -593,7 +674,48 @@ class BulkImageCropper
             );
         }
     }
+    // 6. NOVA FUNKCIJA - RESTORE IZ BACKUP-A
+    private function restore_from_backup($image_id)
+    {
+        $image_path = get_attached_file($image_id);
+        $backup_path = $image_path . '.backup';
 
+        if (!file_exists($backup_path)) {
+            return array(
+                'success' => false,
+                'image_id' => $image_id,
+                'message' => 'No backup found for this image'
+            );
+        }
+
+        if (!file_exists($image_path)) {
+            return array(
+                'success' => false,
+                'image_id' => $image_id,
+                'message' => 'Original image file not found'
+            );
+        }
+
+        // Restore backup to original
+        if (copy($backup_path, $image_path)) {
+            $this->regenerate_image_sizes($image_id);
+            $image_meta = wp_get_attachment_metadata($image_id);
+
+            return array(
+                'success' => true,
+                'image_id' => $image_id,
+                'message' => 'Image restored from backup successfully',
+                'restored_size' => isset($image_meta['width']) ? $image_meta['width'] . 'x' . $image_meta['height'] : 'Unknown',
+                'restored_url' => wp_get_attachment_image_url($image_id, 'full') . '?v=' . time()
+            );
+        } else {
+            return array(
+                'success' => false,
+                'image_id' => $image_id,
+                'message' => 'Failed to restore from backup'
+            );
+        }
+    }
     private function clear_image_caches($image_id)
     {
         // Clear WordPress caches
