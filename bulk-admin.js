@@ -6,9 +6,7 @@ jQuery(document).ready(function ($) {
     let totalPages = 1;
     let perPage = 50;
     let isProcessing = false;
-    let croppedImages = [];
     let currentSearchTerm = '';
-    let imagePreviews = {};
 
     init();
 
@@ -162,8 +160,18 @@ jQuery(document).ready(function ($) {
             $('.image-checkbox').prop('checked', false).trigger('change');
         });
 
-        // PREVIEW CROP (ne diramo original)
-        $(document).on('click', '.preview-crop', function () {
+        // Individual padding update - updates only individual button text
+        $(document).on('input', '.padding-input', function () {
+            let imageId = $(this).closest('.image-item').data('image-id');
+            let padding = parseInt($(this).val()) || 5;
+            
+            // Update individual crop button text
+            let cropBtn = $('.image-item[data-image-id="' + imageId + '"] .crop-individual');
+            cropBtn.text('Crop (' + padding + 'px)');
+        });
+
+        // Individual crop button
+        $(document).on('click', '.crop-individual', function () {
             if (isProcessing) {
                 showNotification('Please wait for current operation to complete', 'warning');
                 return;
@@ -171,58 +179,12 @@ jQuery(document).ready(function ($) {
 
             let imageId = $(this).data('image-id');
             let paddingInput = $(this).closest('.image-item').find('.padding-input');
-            let padding = parseInt(paddingInput.val()) || 10;
+            let padding = parseInt(paddingInput.val()) || 5;
 
-            previewCropImage(imageId, padding, $(this));
+            cropImageToResults(imageId, padding, $(this));
         });
 
-        // COMMIT PREVIEW (sacuvaj kao original)
-        $(document).on('click', '.commit-preview', function () {
-            if (isProcessing) {
-                showNotification('Please wait for current operation to complete', 'warning');
-                return;
-            }
-
-            let imageId = $(this).data('image-id');
-
-            if (!confirm('Save this preview as the final cropped image? This will replace the original.')) {
-                return;
-            }
-
-            commitPreview(imageId, $(this));
-        });
-
-        // DISCARD PREVIEW (obriši preview)
-        $(document).on('click', '.discard-preview', function () {
-            let imageId = $(this).data('image-id');
-            discardPreview(imageId);
-        });
-
-        // AUTO-PREVIEW sa debounce
-        $(document).on('input', '.padding-input', function () {
-            let imageId = $(this).closest('.image-item').data('image-id');
-            let padding = parseInt($(this).val()) || 10;
-
-            clearTimeout(window.paddingTimeout);
-            window.paddingTimeout = setTimeout(function () {
-                let previewBtn = $('.image-item[data-image-id="' + imageId + '"] .preview-crop');
-                if (previewBtn.length && !isProcessing) {
-                    previewCropImage(imageId, padding, previewBtn);
-                }
-            }, 800);
-        });
-
-        // Standard cropping
-        $(document).on('click', '.crop-single', function () {
-            if (isProcessing) {
-                showNotification('Please wait for current operation to complete', 'warning');
-                return;
-            }
-
-            let imageId = $(this).data('image-id');
-            cropSingleImage(imageId, $(this));
-        });
-
+        // Bulk crop with fixed 5px padding (recommended)
         $('#crop-selected').on('click', function () {
             if (isProcessing) {
                 showNotification('Please wait for current operation to complete', 'warning');
@@ -234,56 +196,309 @@ jQuery(document).ready(function ($) {
                 return;
             }
 
-            if (!confirm('Crop ' + selectedImages.length + ' selected images with 5px padding?')) {
+            if (!confirm('Crop ' + selectedImages.length + ' selected images with 5px padding (recommended)?')) {
                 return;
             }
 
-            startBulkCrop();
+            startBulkCropToResults(5); // Always use 5px for bulk
         });
 
-        $('#crop-with-padding').on('click', function () {
-            if (isProcessing) {
-                showNotification('Please wait for current operation to complete', 'warning');
-                return;
-            }
-
-            if (selectedImages.length === 0) {
-                showNotification('Please select images to crop', 'error');
-                return;
-            }
-
-            let padding = parseInt($('#padding-input').val()) || 10;
-            if (padding < 0 || padding > 100) {
-                showNotification('Padding must be between 0-100px', 'error');
-                return;
-            }
-
-            if (!confirm('Crop ' + selectedImages.length + ' images with ' + padding + 'px padding?')) {
-                return;
-            }
-
-            startBulkCropWithPadding(padding);
-        });
-
-        // Restore
-        $(document).on('click', '.restore-backup', function () {
+        // Save crop result as original
+        $(document).on('click', '.save-crop-result', function () {
             if (isProcessing) {
                 showNotification('Please wait for current operation to complete', 'warning');
                 return;
             }
 
             let imageId = $(this).data('image-id');
-            if (!confirm('Restore image ' + imageId + ' from backup?')) {
+
+            if (!confirm('Save this cropped version as the original image? This will replace the current image.')) {
                 return;
             }
 
-            restoreImageFromBackup(imageId, $(this));
+            saveCropResultAsOriginal(imageId, $(this));
+        });
+
+        // Discard crop result
+        $(document).on('click', '.discard-crop-result', function () {
+            let imageId = $(this).data('image-id');
+            discardCropResult(imageId);
         });
 
         $('#toggle-detailed-log').on('click', function () {
             $('#progress-log').toggle();
         });
     }
+
+    function updateBulkCropButtonText() {
+        // Keep bulk button always 5px (recommended)
+        $('#crop-selected').text('Crop Selected (5px)');
+    }
+
+    function cropImageToResults(imageId, padding, button) {
+        isProcessing = true;
+        button.prop('disabled', true).text('Cropping...');
+
+        updateLiveProgress(0, 100, 'Creating cropped version...');
+        $('#live-progress').show();
+
+        $.ajax({
+            url: ajax_object.ajax_url,
+            type: 'POST',
+            timeout: 60000,
+            data: {
+                action: 'preview_crop', // Use preview_crop to not touch original
+                image_id: imageId,
+                padding: padding,
+                nonce: ajax_object.nonce
+            },
+            success: function (response) {
+                if (response.success) {
+                    let data = response.data;
+                    
+                    // Add to results section
+                    addCropResultToResults(imageId, data, padding);
+
+                    button.text('Crop (' + padding + 'px)').removeClass('cropping');
+                    updateLiveProgress(100, 100, 'Cropped version created');
+                    showQuickResult('Cropped version created for image ' + imageId + ' (' + padding + 'px padding)');
+
+                    setTimeout(function () {
+                        $('#live-progress').fadeOut();
+                    }, 2000);
+                } else {
+                    button.text('Crop Failed').addClass('failed');
+                    updateLiveProgress(100, 100, 'Crop failed');
+                    showQuickResult('Crop failed for image ' + imageId + ': ' + (response.data?.message || 'Unknown error'), true);
+                }
+            },
+            error: function (xhr, status, error) {
+                button.text('Error').addClass('failed');
+                updateLiveProgress(100, 100, 'Error occurred');
+                showQuickResult('Crop error for image ' + imageId + ': ' + error, true);
+            },
+            complete: function () {
+                isProcessing = false;
+                setTimeout(function () {
+                    button.prop('disabled', false);
+                    if (!button.hasClass('failed')) {
+                        let currentPadding = parseInt(button.closest('.image-item').find('.padding-input').val()) || 5;
+                        button.text('Crop (' + currentPadding + 'px)');
+                    }
+                }, 3000);
+            }
+        });
+    }
+
+    function startBulkCropToResults(padding) {
+        isProcessing = true;
+        $('#detailed-progress-section').show();
+        $('#crop-selected').prop('disabled', true).text('Cropping...');
+
+        updateLiveProgress(0, 100, 'Starting bulk crop...');
+        $('#live-progress').show();
+
+        let total = selectedImages.length;
+        let completed = 0;
+        let successCount = 0;
+        let errorCount = 0;
+
+        function processNext() {
+            if (completed >= total) {
+                completeBulkCropToResults(successCount, errorCount, total, padding);
+                return;
+            }
+
+            let imageId = selectedImages[completed];
+            let progress = completed + 1;
+
+            updateDetailedProgress(progress, total, 'Cropping image ID: ' + imageId);
+            updateLiveProgress(progress, total, 'Processing ' + progress + '/' + total);
+            logProgress('Processing image ' + imageId + ' (' + progress + '/' + total + ')');
+
+            $.ajax({
+                url: ajax_object.ajax_url,
+                type: 'POST',
+                timeout: 60000,
+                data: {
+                    action: 'preview_crop',
+                    image_id: imageId,
+                    padding: padding,
+                    nonce: ajax_object.nonce
+                },
+                success: function (response) {
+                    if (response.success) {
+                        successCount++;
+                        addCropResultToResults(imageId, response.data, padding);
+                        logProgress('Image ' + imageId + ' cropped successfully');
+                    } else {
+                        errorCount++;
+                        logProgress('Image ' + imageId + ' failed: ' + (response.data?.message || 'Unknown error'), true);
+                    }
+                },
+                error: function (xhr, status, error) {
+                    errorCount++;
+                    logProgress('Image ' + imageId + ' error: ' + error, true);
+                },
+                complete: function () {
+                    completed++;
+                    setTimeout(processNext, 500);
+                }
+            });
+        }
+
+        processNext();
+    }
+
+    function completeBulkCropToResults(successCount, errorCount, total, padding) {
+        isProcessing = false;
+        $('#crop-selected').prop('disabled', false).text('Crop Selected (5px)');
+
+        updateDetailedProgress(total, total, 'Completed!');
+        updateLiveProgress(100, 100, 'Bulk crop completed');
+
+        logProgress('BULK CROP COMPLETED');
+        logProgress('SUMMARY: ' + successCount + ' successful, ' + errorCount + ' failed out of ' + total + ' images (padding: ' + padding + 'px)');
+
+        showQuickResult('Bulk crop completed: ' + successCount + '/' + total + ' images successful (' + padding + 'px padding)');
+
+        setTimeout(function () {
+            $('#live-progress').fadeOut();
+        }, 5000);
+
+        if (successCount === total) {
+            showNotification('All ' + total + ' images cropped successfully!', 'success');
+        } else if (successCount > 0) {
+            showNotification(successCount + ' of ' + total + ' images cropped successfully', 'success');
+        } else {
+            showNotification('All crops failed. Check the detailed log for errors.', 'error');
+        }
+    }
+
+    function saveCropResultAsOriginal(imageId, button) {
+        isProcessing = true;
+        button.prop('disabled', true).text('Saving...');
+
+        updateLiveProgress(0, 100, 'Saving as original image...');
+        $('#live-progress').show();
+
+        $.ajax({
+            url: ajax_object.ajax_url,
+            type: 'POST',
+            timeout: 60000,
+            data: {
+                action: 'commit_preview',
+                image_id: imageId,
+                nonce: ajax_object.nonce
+            },
+            success: function (response) {
+                if (response.success) {
+                    // Remove from results section
+                    $('.crop-result-item[data-image-id="' + imageId + '"]').fadeOut(500, function() {
+                        $(this).remove();
+                    });
+                    
+                    // Remove from main images section with animation
+                    let imageItem = $('.image-item[data-image-id="' + imageId + '"]');
+                    imageItem.addClass('removing');
+                    
+                    setTimeout(function() {
+                        imageItem.remove();
+                        
+                        // Update selected arrays
+                        selectedImages = selectedImages.filter(id => id !== imageId);
+                        updateSelectedImagesDisplay();
+                        
+                        // Check if image checkbox was checked and update
+                        let checkbox = $('#img_' + imageId);
+                        if (checkbox.is(':checked')) {
+                            checkbox.prop('checked', false);
+                        }
+                        
+                        showNotification('Image ' + imageId + ' saved and removed from list ✅', 'success');
+                    }, 500);
+
+                    button.text('Saved').addClass('success');
+                    updateLiveProgress(100, 100, 'Image saved successfully');
+                    showQuickResult('Image ' + imageId + ' saved as original and removed from workflow');
+
+                    setTimeout(function () {
+                        $('#live-progress').fadeOut();
+                    }, 2000);
+                } else {
+                    button.text('Save Failed').addClass('failed');
+                    updateLiveProgress(100, 100, 'Save failed');
+                    showQuickResult('Save failed for image ' + imageId + ': ' + (response.data?.message || 'Unknown error'), true);
+                }
+            },
+            error: function (xhr, status, error) {
+                button.text('Error').addClass('failed');
+                updateLiveProgress(100, 100, 'Error occurred');
+                showQuickResult('Save error for image ' + imageId + ': ' + error, true);
+            },
+            complete: function () {
+                isProcessing = false;
+                setTimeout(function () {
+                    button.prop('disabled', false);
+                    if (!button.hasClass('success') && !button.hasClass('failed')) {
+                        button.text('Save');
+                    }
+                }, 3000);
+            }
+        });
+    }
+
+    function discardCropResult(imageId) {
+        $.ajax({
+            url: ajax_object.ajax_url,
+            type: 'POST',
+            data: {
+                action: 'discard_preview',
+                image_id: imageId,
+                nonce: ajax_object.nonce
+            },
+            success: function (response) {
+                $('.crop-result-item[data-image-id="' + imageId + '"]').fadeOut(500, function() {
+                    $(this).remove();
+                });
+                showNotification('Cropped result discarded', 'success');
+            }
+        });
+    }
+
+    function addCropResultToResults(imageId, previewData, padding) {
+        $('#cropped-images-section').show();
+
+        let imageItem = $('.image-item[data-image-id="' + imageId + '"]');
+        let imageTitle = imageItem.find('.image-title').text() || 'Image ' + imageId;
+        let productName = imageItem.closest('.product-images-group').find('.product-group-title').text() || 'Unknown Product';
+
+        // Remove existing result for this image if exists
+        $('.crop-result-item[data-image-id="' + imageId + '"]').remove();
+
+        let html = '<div class="crop-result-item" data-image-id="' + imageId + '">';
+        html += '<div class="crop-result-preview">';
+        html += '<img src="' + previewData.preview_url + '" alt="Cropped ' + imageTitle + '" loading="lazy">';
+        html += '</div>';
+        html += '<div class="crop-result-info">';
+        html += '<h4 title="' + imageTitle + '">' + imageTitle + '</h4>';
+        html += '<div class="crop-result-meta">Product: ' + productName + '</div>';
+        html += '<div class="crop-result-meta">ID: ' + imageId + '</div>';
+        html += '<div class="crop-result-meta">Size: ' + previewData.preview_size + '</div>';
+        html += '<div class="crop-result-meta">Padding: ' + padding + 'px</div>';
+        html += '<div class="crop-result-actions">';
+        html += '<button class="button button-primary save-crop-result" data-image-id="' + imageId + '">Save as Original</button>';
+        html += '<button class="button button-secondary discard-crop-result" data-image-id="' + imageId + '">Discard</button>';
+        html += '<a href="' + previewData.preview_url + '" target="_blank" class="button button-small">View Full</a>';
+        html += '</div>';
+        html += '</div>';
+        html += '</div>';
+
+        $('#cropped-images-grid').prepend(html);
+    }
+
+    // Keep all other existing functions (resetPluginState, updateCategoryInfo, loadCategories, etc.)
+    // ... [Previous functions remain unchanged] ...
 
     function resetPluginState() {
         clearTimeout(window.searchTimeout);
@@ -295,8 +510,6 @@ jQuery(document).ready(function ($) {
         currentPage = 1;
         totalPages = 1;
         isProcessing = false;
-        croppedImages = [];
-        imagePreviews = {};
 
         $('#category-select').val('');
         $('#search-products').val('');
@@ -525,7 +738,6 @@ jQuery(document).ready(function ($) {
     function clearAllSelections() {
         selectedProducts = [];
         selectedImages = [];
-        imagePreviews = {};
         $('.product-checkbox').prop('checked', false);
         $('.product-card').removeClass('selected');
         $('.image-checkbox').prop('checked', false);
@@ -626,18 +838,13 @@ jQuery(document).ready(function ($) {
                 // Individual padding control
                 html += '<div class="individual-padding">';
                 html += '<label>Padding: </label>';
-                html += '<input type="number" class="padding-input" value="10" min="0" max="100" style="width:50px;"> px';
+                html += '<input type="number" class="padding-input" value="5" min="0" max="100" style="width:50px;"> px';
                 html += '</div>';
 
                 html += '<div class="image-actions">';
-                html += '<button class="button button-small preview-crop" data-image-id="' + image.id + '">Preview</button>';
-                html += '<button class="button button-small crop-with-custom-padding" data-image-id="' + image.id + '">Crop</button>';
-                html += '<button class="button button-small crop-single" data-image-id="' + image.id + '">Quick Crop (5px)</button>';
-                html += '<a href="' + image.full_url + '" target="_blank" class="button button-small">View</a>';
+                html += '<button class="button button-small crop-individual" data-image-id="' + image.id + '">Crop (5px)</button>';
+                html += '<a href="' + image.full_url + '" target="_blank" class="button button-small">View Original</a>';
                 html += '</div>';
-
-                // Preview container (hidden initially)
-                html += '<div class="preview-container" style="display: none;"></div>';
 
                 html += '</div>';
                 html += '</div>';
@@ -654,327 +861,9 @@ jQuery(document).ready(function ($) {
         let count = selectedImages.length;
         $('#selected-count').text(count + ' selected');
         $('#crop-selected').prop('disabled', count === 0 || isProcessing);
-        $('#crop-with-padding').prop('disabled', count === 0 || isProcessing);
-    }
-
-    // CROP IMAGE WITH PADDING (kropi i pošalji u results, ne diraj original)
-    function cropImageWithPadding(imageId, padding, button) {
-        isProcessing = true;
-        button.prop('disabled', true).text('Cropping...');
-
-        updateLiveProgress(0, 100, 'Creating cropped version...');
-        $('#live-progress').show();
-
-        $.ajax({
-            url: ajax_object.ajax_url,
-            type: 'POST',
-            timeout: 60000,
-            data: {
-                action: 'preview_crop', // Koristimo preview_crop da ne diramo original
-                image_id: imageId,
-                padding: padding,
-                nonce: ajax_object.nonce
-            },
-            success: function (response) {
-                if (response.success) {
-                    let data = response.data;
-                    
-                    // Dodaj u results sekciju
-                    addCropResultToResults(imageId, data, padding);
-
-                    button.text('Cropped').addClass('success');
-                    updateLiveProgress(100, 100, 'Cropped version created');
-                    showQuickResult('Cropped version created for image ' + imageId + ' (' + padding + 'px padding)');
-
-                    setTimeout(function () {
-                        $('#live-progress').fadeOut();
-                    }, 2000);
-                } else {
-                    button.text('Crop Failed').addClass('failed');
-                    updateLiveProgress(100, 100, 'Crop failed');
-                    showQuickResult('Crop failed for image ' + imageId + ': ' + (response.data?.message || 'Unknown error'), true);
-                }
-            },
-            error: function (xhr, status, error) {
-                button.text('Error').addClass('failed');
-                updateLiveProgress(100, 100, 'Error occurred');
-                showQuickResult('Crop error for image ' + imageId + ': ' + error, true);
-            },
-            complete: function () {
-                isProcessing = false;
-                setTimeout(function () {
-                    button.prop('disabled', false);
-                    if (!button.hasClass('success') && !button.hasClass('failed')) {
-                        button.text('Crop');
-                    }
-                }, 3000);
-            }
-        });
-    }
-
-    // SAVE RESULT AS ORIGINAL (sacuvaj kao finalnu sliku)
-    function saveResultAsOriginal(imageId, button) {
-        isProcessing = true;
-        button.prop('disabled', true).text('Saving...');
-
-        updateLiveProgress(0, 100, 'Saving as original image...');
-        $('#live-progress').show();
-
-        $.ajax({
-            url: ajax_object.ajax_url,
-            type: 'POST',
-            timeout: 60000,
-            data: {
-                action: 'commit_preview',
-                image_id: imageId,
-                nonce: ajax_object.nonce
-            },
-            success: function (response) {
-                if (response.success) {
-                    // Ukloni iz results
-                    $('.cropped-result-item[data-image-id="' + imageId + '"]').fadeOut(500, function() {
-                        $(this).remove();
-                    });
-                    
-                    // Refresh original sliku
-                    refreshImagePreview(imageId);
-
-                    button.text('Saved').addClass('success');
-                    updateLiveProgress(100, 100, 'Image saved successfully');
-                    showQuickResult('Image ' + imageId + ' saved as original');
-
-                    setTimeout(function () {
-                        $('#live-progress').fadeOut();
-                    }, 2000);
-                } else {
-                    button.text('Save Failed').addClass('failed');
-                    updateLiveProgress(100, 100, 'Save failed');
-                    showQuickResult('Save failed for image ' + imageId + ': ' + (response.data?.message || 'Unknown error'), true);
-                }
-            },
-            error: function (xhr, status, error) {
-                button.text('Error').addClass('failed');
-                updateLiveProgress(100, 100, 'Error occurred');
-                showQuickResult('Save error for image ' + imageId + ': ' + error, true);
-            },
-            complete: function () {
-                isProcessing = false;
-                setTimeout(function () {
-                    button.prop('disabled', false);
-                    if (!button.hasClass('success') && !button.hasClass('failed')) {
-                        button.text('Save');
-                    }
-                }, 3000);
-            }
-        });
-    }
-
-    // DISCARD RESULT (ukloni iz results)
-    function discardResult(imageId) {
-        $.ajax({
-            url: ajax_object.ajax_url,
-            type: 'POST',
-            data: {
-                action: 'discard_preview',
-                image_id: imageId,
-                nonce: ajax_object.nonce
-            },
-            success: function (response) {
-                $('.cropped-result-item[data-image-id="' + imageId + '"]').fadeOut(500, function() {
-                    $(this).remove();
-                });
-                showNotification('Cropped result discarded', 'success');
-            }
-        });
-    }
-
-    // DODAJ CROP RESULT U RESULTS SEKCIJU
-    function addCropResultToResults(imageId, previewData, padding) {
-        $('#cropped-images-section').show();
-
-        let imageItem = $('.image-item[data-image-id="' + imageId + '"]');
-        let imageTitle = imageItem.find('.image-title').text() || 'Image ' + imageId;
-        let productName = imageItem.closest('.product-images-group').find('.product-group-title').text() || 'Unknown Product';
-
-        // Ukloni postojeći result za ovu sliku ako postoji
-        $('.cropped-result-item[data-image-id="' + imageId + '"]').remove();
-
-        let html = '<div class="cropped-result-item" data-image-id="' + imageId + '">';
-        html += '<div class="cropped-image-preview">';
-        html += '<img src="' + previewData.preview_url + '" alt="Cropped ' + imageTitle + '" loading="lazy">';
-        html += '</div>';
-        html += '<div class="cropped-image-info">';
-        html += '<h4 title="' + imageTitle + '">' + imageTitle + '</h4>';
-        html += '<div class="cropped-image-meta">Product: ' + productName + '</div>';
-        html += '<div class="cropped-image-meta">ID: ' + imageId + '</div>';
-        html += '<div class="cropped-image-meta">Size: ' + previewData.preview_size + '</div>';
-        html += '<div class="cropped-image-meta">Padding: ' + padding + 'px</div>';
-        html += '<div class="cropped-image-actions">';
-        html += '<button class="button button-primary save-result" data-image-id="' + imageId + '">Save as Original</button>';
-        html += '<button class="button button-secondary discard-result" data-image-id="' + imageId + '">Discard</button>';
-        html += '<a href="' + previewData.preview_url + '" target="_blank" class="button button-small">View Full</a>';
-        html += '</div>';
-        html += '</div>';
-        html += '</div>';
-
-        $('#cropped-images-grid').prepend(html);
-    }
-    function previewCropImage(imageId, padding, button) {
-        isProcessing = true;
-        button.prop('disabled', true).text('Creating Preview...');
-
-        updateLiveProgress(0, 100, 'Creating crop preview...');
-        $('#live-progress').show();
-
-        $.ajax({
-            url: ajax_object.ajax_url,
-            type: 'POST',
-            timeout: 60000,
-            data: {
-                action: 'preview_crop',
-                image_id: imageId,
-                padding: padding,
-                nonce: ajax_object.nonce
-            },
-            success: function (response) {
-                if (response.success) {
-                    let data = response.data;
-                    imagePreviews[imageId] = data;
-                    updateImagePreview(imageId, data);
-
-                    button.text('Preview Created').addClass('success');
-                    updateLiveProgress(100, 100, 'Preview created successfully');
-                    showQuickResult('Preview created for image ' + imageId + ' (' + padding + 'px padding)');
-
-                    setTimeout(function () {
-                        $('#live-progress').fadeOut();
-                    }, 2000);
-                } else {
-                    button.text('Preview Failed').addClass('failed');
-                    updateLiveProgress(100, 100, 'Preview failed');
-                    showQuickResult('Preview failed for image ' + imageId + ': ' + (response.data?.message || 'Unknown error'), true);
-                }
-            },
-            error: function (xhr, status, error) {
-                button.text('Error').addClass('failed');
-                updateLiveProgress(100, 100, 'Error occurred');
-                showQuickResult('Preview error for image ' + imageId + ': ' + error, true);
-            },
-            complete: function () {
-                isProcessing = false;
-                setTimeout(function () {
-                    button.prop('disabled', false);
-                    if (!button.hasClass('success') && !button.hasClass('failed')) {
-                        button.text('Preview');
-                    }
-                }, 3000);
-            }
-        });
-    }
-
-    // COMMIT PREVIEW FUNKCIJA
-    function commitPreview(imageId, button) {
-        if (!imagePreviews[imageId]) {
-            showNotification('No preview to commit', 'error');
-            return;
-        }
-
-        isProcessing = true;
-        button.prop('disabled', true).text('Saving...');
-
-        updateLiveProgress(0, 100, 'Saving cropped image...');
-        $('#live-progress').show();
-
-        $.ajax({
-            url: ajax_object.ajax_url,
-            type: 'POST',
-            timeout: 60000,
-            data: {
-                action: 'commit_preview',
-                image_id: imageId,
-                nonce: ajax_object.nonce
-            },
-            success: function (response) {
-                if (response.success) {
-                    delete imagePreviews[imageId];
-                    refreshImagePreview(imageId);
-                    hidePreviewUI(imageId);
-
-                    button.text('Saved').addClass('success');
-                    updateLiveProgress(100, 100, 'Image saved successfully');
-                    showQuickResult('Image ' + imageId + ' saved successfully');
-
-                    setTimeout(function () {
-                        $('#live-progress').fadeOut();
-                    }, 2000);
-                } else {
-                    button.text('Save Failed').addClass('failed');
-                    updateLiveProgress(100, 100, 'Save failed');
-                    showQuickResult('Save failed for image ' + imageId + ': ' + (response.data?.message || 'Unknown error'), true);
-                }
-            },
-            error: function (xhr, status, error) {
-                button.text('Error').addClass('failed');
-                updateLiveProgress(100, 100, 'Error occurred');
-                showQuickResult('Save error for image ' + imageId + ': ' + error, true);
-            },
-            complete: function () {
-                isProcessing = false;
-                setTimeout(function () {
-                    button.prop('disabled', false);
-                    if (!button.hasClass('success') && !button.hasClass('failed')) {
-                        button.text('Save');
-                    }
-                }, 3000);
-            }
-        });
-    }
-
-    // DISCARD PREVIEW FUNKCIJA
-    function discardPreview(imageId) {
-        $.ajax({
-            url: ajax_object.ajax_url,
-            type: 'POST',
-            data: {
-                action: 'discard_preview',
-                image_id: imageId,
-                nonce: ajax_object.nonce
-            },
-            success: function (response) {
-                delete imagePreviews[imageId];
-                hidePreviewUI(imageId);
-                showNotification('Preview discarded', 'success');
-            }
-        });
-    }
-
-    // AŽURIRAJ IMAGE PREVIEW UI
-    function updateImagePreview(imageId, previewData) {
-        let imageItem = $('.image-item[data-image-id="' + imageId + '"]');
-        let previewContainer = imageItem.find('.preview-container');
-
-        let previewHtml = '<div class="crop-preview">';
-        previewHtml += '<div class="preview-header">Crop Preview (' + previewData.padding_used + 'px padding)</div>';
-        previewHtml += '<div class="preview-image">';
-        previewHtml += '<img src="' + previewData.preview_url + '" alt="Crop Preview" style="max-width: 100%; height: auto; border: 2px solid #0073aa;">';
-        previewHtml += '</div>';
-        previewHtml += '<div class="preview-info">Size: ' + previewData.preview_size + '</div>';
-        previewHtml += '<div class="preview-actions">';
-        previewHtml += '<button class="button button-primary commit-preview" data-image-id="' + imageId + '">Save This Crop</button>';
-        previewHtml += '<button class="button button-secondary discard-preview" data-image-id="' + imageId + '">Try Again</button>';
-        previewHtml += '</div>';
-        previewHtml += '</div>';
-
-        previewContainer.html(previewHtml);
-        previewContainer.show();
-        imageItem.addClass('has-preview');
-    }
-
-    // UKLONI PREVIEW UI
-    function hidePreviewUI(imageId) {
-        let imageItem = $('.image-item[data-image-id="' + imageId + '"]');
-        imageItem.find('.preview-container').hide().html('');
-        imageItem.removeClass('has-preview');
+        
+        // Keep bulk crop button text fixed at 5px
+        $('#crop-selected').text('Crop Selected (5px)');
     }
 
     function updateLiveProgress(current, total, message) {
@@ -994,341 +883,6 @@ jQuery(document).ready(function ($) {
         let currentLog = $('#progress-log').html();
         let logClass = isError ? 'style="color: #d63638;"' : '';
         $('#progress-log').html('[' + timestamp + '] <span ' + logClass + '>' + message + '</span><br>' + currentLog);
-    }
-
-    function cropSingleImage(imageId, button) {
-        isProcessing = true;
-        button.prop('disabled', true).text('Cropping...');
-
-        updateLiveProgress(0, 100, 'Cropping image ' + imageId + '...');
-        $('#live-progress').show();
-
-        $.ajax({
-            url: ajax_object.ajax_url,
-            type: 'POST',
-            timeout: 60000,
-            data: {
-                action: 'crop_single_image',
-                image_id: imageId,
-                nonce: ajax_object.nonce
-            },
-            success: function (response) {
-                if (response.success) {
-                    button.text('Cropped').addClass('cropped');
-                    updateLiveProgress(100, 100, 'Image cropped successfully');
-                    showQuickResult('Image ' + imageId + ' cropped successfully');
-                    refreshImagePreview(imageId);
-                    addCroppedImageToResults(response.data);
-
-                    setTimeout(function () {
-                        $('#live-progress').fadeOut();
-                    }, 2000);
-                } else {
-                    button.text('Failed').addClass('failed');
-                    updateLiveProgress(100, 100, 'Crop failed');
-                    showQuickResult('Image ' + imageId + ' failed: ' + (response.data?.message || 'Unknown error'), true);
-                }
-            },
-            error: function (xhr, status, error) {
-                button.text('Error').addClass('failed');
-                updateLiveProgress(100, 100, 'Error occurred');
-                showQuickResult('Image ' + imageId + ' error: ' + error, true);
-            },
-            complete: function () {
-                isProcessing = false;
-                setTimeout(function () {
-                    button.prop('disabled', false);
-                    if (!button.hasClass('cropped') && !button.hasClass('failed')) {
-                        button.text('Quick Crop');
-                    }
-                }, 3000);
-            }
-        });
-    }
-
-    function startBulkCrop() {
-        isProcessing = true;
-        $('#detailed-progress-section').show();
-        $('#crop-selected').prop('disabled', true).text('Cropping...');
-
-        updateLiveProgress(0, 100, 'Starting bulk crop...');
-        $('#live-progress').show();
-
-        let total = selectedImages.length;
-        let completed = 0;
-        let successCount = 0;
-        let errorCount = 0;
-
-        function processNext() {
-            if (completed >= total) {
-                completeBulkCrop(successCount, errorCount, total);
-                return;
-            }
-
-            let imageId = selectedImages[completed];
-            let progress = completed + 1;
-
-            updateDetailedProgress(progress, total, 'Cropping image ID: ' + imageId);
-            updateLiveProgress(progress, total, 'Processing ' + progress + '/' + total);
-            logProgress('Processing image ' + imageId + ' (' + progress + '/' + total + ')');
-
-            $.ajax({
-                url: ajax_object.ajax_url,
-                type: 'POST',
-                timeout: 60000,
-                data: {
-                    action: 'crop_single_image',
-                    image_id: imageId,
-                    nonce: ajax_object.nonce
-                },
-                success: function (response) {
-                    if (response.success) {
-                        successCount++;
-                        refreshImagePreview(imageId);
-                        logProgress('Image ' + imageId + ' cropped successfully');
-                        addCroppedImageToResults(response.data);
-                    } else {
-                        errorCount++;
-                        logProgress('Image ' + imageId + ' failed: ' + (response.data?.message || 'Unknown error'), true);
-                    }
-                },
-                error: function (xhr, status, error) {
-                    errorCount++;
-                    logProgress('Image ' + imageId + ' error: ' + error, true);
-                },
-                complete: function () {
-                    completed++;
-                    setTimeout(processNext, 500);
-                }
-            });
-        }
-
-        processNext();
-    }
-
-    function startBulkCropWithPadding(padding) {
-        isProcessing = true;
-        $('#detailed-progress-section').show();
-        $('#crop-with-padding').prop('disabled', true).text('Cropping with ' + padding + 'px...');
-
-        updateLiveProgress(0, 100, 'Starting bulk crop with ' + padding + 'px padding...');
-        $('#live-progress').show();
-
-        let total = selectedImages.length;
-        let completed = 0;
-        let successCount = 0;
-        let errorCount = 0;
-
-        function processNext() {
-            if (completed >= total) {
-                completeBulkCropWithPadding(successCount, errorCount, total, padding);
-                return;
-            }
-
-            let imageId = selectedImages[completed];
-            let progress = completed + 1;
-
-            updateDetailedProgress(progress, total, 'Cropping image ID: ' + imageId + ' (padding: ' + padding + 'px)');
-            updateLiveProgress(progress, total, 'Processing ' + progress + '/' + total);
-            logProgress('Processing image ' + imageId + ' with ' + padding + 'px padding (' + progress + '/' + total + ')');
-
-            $.ajax({
-                url: ajax_object.ajax_url,
-                type: 'POST',
-                timeout: 60000,
-                data: {
-                    action: 'crop_with_padding',
-                    image_id: imageId,
-                    padding: padding,
-                    nonce: ajax_object.nonce
-                },
-                success: function (response) {
-                    if (response.success) {
-                        successCount++;
-                        refreshImagePreview(imageId);
-                        logProgress('Image ' + imageId + ' cropped successfully with ' + padding + 'px padding');
-                        addCroppedImageToResults(response.data);
-                    } else {
-                        errorCount++;
-                        logProgress('Image ' + imageId + ' failed: ' + (response.data?.message || 'Unknown error'), true);
-                    }
-                },
-                error: function (xhr, status, error) {
-                    errorCount++;
-                    logProgress('Image ' + imageId + ' error: ' + error, true);
-                },
-                complete: function () {
-                    completed++;
-                    setTimeout(processNext, 500);
-                }
-            });
-        }
-
-        processNext();
-    }
-
-    function completeBulkCrop(successCount, errorCount, total) {
-        isProcessing = false;
-        $('#crop-selected').prop('disabled', false).text('🚀 Brzi Crop (5px)');
-
-        updateDetailedProgress(total, total, 'Completed!');
-        updateLiveProgress(100, 100, 'Bulk crop completed');
-
-        logProgress('BULK CROP COMPLETED');
-        logProgress('SUMMARY: ' + successCount + ' successful, ' + errorCount + ' failed out of ' + total + ' images');
-
-        showQuickResult('Bulk crop completed: ' + successCount + '/' + total + ' images successful');
-
-        if (successCount > 0) {
-            selectedImages = [];
-            $('.image-checkbox').prop('checked', false);
-            updateSelectedImagesDisplay();
-        }
-
-        setTimeout(function () {
-            $('#live-progress').fadeOut();
-        }, 5000);
-
-        if (successCount === total) {
-            showNotification('All ' + total + ' images cropped successfully!', 'success');
-        } else if (successCount > 0) {
-            showNotification(successCount + ' of ' + total + ' images cropped successfully', 'success');
-        } else {
-            showNotification('All crops failed. Check the detailed log for errors.', 'error');
-        }
-    }
-
-    function completeBulkCropWithPadding(successCount, errorCount, total, padding) {
-        isProcessing = false;
-        $('#crop-with-padding').prop('disabled', false).text('🎯 Crop sa Padding');
-
-        updateDetailedProgress(total, total, 'Completed!');
-        updateLiveProgress(100, 100, 'Bulk crop with ' + padding + 'px padding completed');
-
-        logProgress('BULK CROP WITH PADDING COMPLETED');
-        logProgress('SUMMARY: ' + successCount + ' successful, ' + errorCount + ' failed out of ' + total + ' images (padding: ' + padding + 'px)');
-
-        showQuickResult('Bulk crop completed: ' + successCount + '/' + total + ' images successful (' + padding + 'px padding)');
-
-        if (successCount > 0) {
-            selectedImages = [];
-            $('.image-checkbox').prop('checked', false);
-            updateSelectedImagesDisplay();
-        }
-
-        setTimeout(function () {
-            $('#live-progress').fadeOut();
-        }, 5000);
-
-        if (successCount === total) {
-            showNotification('All ' + total + ' images cropped successfully with ' + padding + 'px padding!', 'success');
-        } else if (successCount > 0) {
-            showNotification(successCount + ' of ' + total + ' images cropped successfully', 'success');
-        } else {
-            showNotification('All crops failed. Check the detailed log for errors.', 'error');
-        }
-    }
-
-    function restoreImageFromBackup(imageId, button) {
-        isProcessing = true;
-        button.prop('disabled', true).text('Restoring...');
-
-        updateLiveProgress(0, 100, 'Restoring image ' + imageId + ' from backup...');
-        $('#live-progress').show();
-
-        $.ajax({
-            url: ajax_object.ajax_url,
-            type: 'POST',
-            timeout: 60000,
-            data: {
-                action: 'restore_image_backup',
-                image_id: imageId,
-                nonce: ajax_object.nonce
-            },
-            success: function (response) {
-                if (response.success) {
-                    button.text('Restored').addClass('cropped');
-                    updateLiveProgress(100, 100, 'Image restored successfully');
-                    showQuickResult('Image ' + imageId + ' restored from backup');
-                    refreshImagePreview(imageId);
-
-                    setTimeout(function () {
-                        $('#live-progress').fadeOut();
-                    }, 2000);
-                } else {
-                    button.text('Failed').addClass('failed');
-                    updateLiveProgress(100, 100, 'Restore failed');
-                    showQuickResult('Image ' + imageId + ' restore failed: ' + (response.data?.message || 'Unknown error'), true);
-                }
-            },
-            error: function (xhr, status, error) {
-                button.text('Error').addClass('failed');
-                updateLiveProgress(100, 100, 'Error occurred');
-                showQuickResult('Image ' + imageId + ' restore error: ' + error, true);
-            },
-            complete: function () {
-                isProcessing = false;
-                setTimeout(function () {
-                    button.prop('disabled', false);
-                    if (!button.hasClass('cropped') && !button.hasClass('failed')) {
-                        button.text('Restore');
-                    }
-                }, 3000);
-            }
-        });
-    }
-
-    function addCroppedImageToResults(data) {
-        // Ova funkcija se koristi samo za quick crop i bulk crop
-        $('#cropped-images-section').show();
-        croppedImages.push(data);
-
-        let imageItem = $('.image-item[data-image-id="' + data.image_id + '"]');
-        let imageTitle = imageItem.find('.image-title').text() || 'Image ' + data.image_id;
-        let productName = imageItem.closest('.product-images-group').find('.product-group-title').text() || 'Unknown Product';
-
-        let html = '<div class="cropped-image-item saved-crop" data-image-id="' + data.image_id + '">';
-        html += '<div class="cropped-image-preview">';
-        html += '<img src="' + (data.cropped_url || '') + '" alt="Cropped ' + imageTitle + '" loading="lazy">';
-        html += '</div>';
-        html += '<div class="cropped-image-info">';
-        html += '<h4 title="' + imageTitle + '">✅ ' + imageTitle + ' (SAVED)</h4>';
-        html += '<div class="cropped-image-meta">Product: ' + productName + '</div>';
-        html += '<div class="cropped-image-meta">ID: ' + data.image_id + '</div>';
-        if (data.new_size) {
-            html += '<div class="cropped-image-meta">New Size: ' + data.new_size + '</div>';
-        }
-        if (data.padding_used) {
-            html += '<div class="cropped-image-meta">Padding: ' + data.padding_used + 'px</div>';
-        }
-        html += '<div class="cropped-image-actions">';
-        html += '<a href="' + (data.cropped_url || '') + '" target="_blank" class="button button-small">View Full</a>';
-        html += '<span style="color: #00a32a; font-weight: bold;">✓ Saved as Original</span>';
-        html += '</div>';
-        html += '</div>';
-        html += '</div>';
-
-        $('#cropped-images-grid').prepend(html);
-    }
-
-    function refreshImagePreview(imageId) {
-        let imageItem = $('.image-item[data-image-id="' + imageId + '"]');
-        let img = imageItem.find('img');
-        let currentSrc = img.attr('src');
-
-        if (currentSrc) {
-            let newSrc = currentSrc.split('?')[0] + '?v=' + Date.now();
-            img.attr('src', newSrc);
-
-            let viewLink = imageItem.find('a[target="_blank"]');
-            if (viewLink.length) {
-                let currentHref = viewLink.attr('href');
-                if (currentHref) {
-                    let newHref = currentHref.split('?')[0] + '?v=' + Date.now();
-                    viewLink.attr('href', newHref);
-                }
-            }
-        }
     }
 
     function showQuickResult(message, isError = false) {

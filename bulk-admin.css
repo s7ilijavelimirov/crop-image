@@ -891,3 +891,225 @@ mark {
     color: white !important;
     font-weight: bold;
 }
+/* ==========================================================================
+   Simplified Crop Workflow Styles
+   ========================================================================== */
+
+/* ==========================================================================
+   Simplified Crop Workflow Styles
+   ========================================================================== */
+
+/* Individual padding controls */
+.individual-padding {
+    margin: 8px 0;
+    padding: 8px;
+    background: #f6f7f7;
+    border-radius: 3px;
+    text-align: center;
+}
+
+.individual-padding label {
+    font-size: 12px;
+    color: #646970;
+    margin-right: 5px;
+}
+
+.padding-input {
+    font-size: 12px;
+    padding: 3px 5px;
+    border: 1px solid #c3c4c7;
+    border-radius: 3px;
+    text-align: center;
+}
+
+/* Crop button dynamic styling */
+.crop-individual {
+    background: #0073aa !important;
+    border-color: #0073aa !important;
+    color: white !important;
+    font-weight: bold;
+    transition: all 0.3s ease;
+}
+
+.crop-individual:hover {
+    background: #005a87 !important;
+    border-color: #005a87 !important;
+    transform: scale(1.05);
+}
+
+.crop-individual:disabled {
+    background: #c3c4c7 !important;
+    border-color: #c3c4c7 !important;
+    color: #646970 !important;
+    transform: none;
+}
+
+.crop-individual.failed {
+    background: #d63638 !important;
+    border-color: #d63638 !important;
+}
+
+/* Crop Results Section */
+.crop-result-item {
+    border: 1px solid #c3c4c7;
+    background: #fff;
+    border-radius: 5px;
+    overflow: hidden;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+    margin-bottom: 20px;
+}
+
+.crop-result-preview {
+    width: 100%;
+    height: 300px;
+    background: #f6f7f7;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border-bottom: 1px solid #c3c4c7;
+}
+
+.crop-result-preview img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    border-radius: 3px;
+}
+
+.crop-result-info {
+    padding: 15px;
+    background: #fff;
+}
+
+.crop-result-info h4 {
+    margin: 0 0 8px 0;
+    font-size: 14px;
+    font-weight: 600;
+    color: #1d2327;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.crop-result-meta {
+    font-size: 12px;
+    color: #646970;
+    margin: 3px 0;
+}
+
+.crop-result-actions {
+    margin-top: 12px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.crop-result-actions .button {
+    font-size: 11px;
+    padding: 6px 12px;
+    height: auto;
+}
+
+.save-crop-result {
+    background: #00a32a !important;
+    border-color: #00a32a !important;
+    color: white !important;
+    font-weight: bold;
+}
+
+.save-crop-result:hover {
+    background: #008a20 !important;
+    border-color: #008a20 !important;
+}
+
+.discard-crop-result {
+    background: #f0f0f1 !important;
+    border-color: #c3c4c7 !important;
+    color: #50575e !important;
+}
+
+.discard-crop-result:hover {
+    background: #e0e0e1 !important;
+    border-color: #8c8f94 !important;
+}
+
+/* Enhanced grid for crop results */
+#cropped-images-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+    gap: 20px;
+    margin-top: 15px;
+}
+
+/* Success animations */
+.save-crop-result.success {
+    background: #00a32a !important;
+    border-color: #00a32a !important;
+    animation: pulse-success 0.6s ease-in-out;
+}
+
+@keyframes pulse-success {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.1); }
+    100% { transform: scale(1); }
+}
+
+/* Bulk crop button dynamic text */
+#crop-selected {
+    transition: all 0.3s ease;
+}
+
+#crop-selected:not(:disabled):hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 5px rgba(0, 115, 170, 0.3);
+}
+
+/* Results section header */
+#cropped-images-section {
+    background: #f0f8e7;
+    border-left: 4px solid #00a32a;
+}
+
+#cropped-images-section h2 {
+    color: #00a32a;
+}
+
+/* Image removal animation */
+.image-item.removing {
+    animation: fadeOutScale 0.5s ease-in-out forwards;
+}
+
+@keyframes fadeOutScale {
+    0% {
+        opacity: 1;
+        transform: scale(1);
+    }
+    50% {
+        opacity: 0.5;
+        transform: scale(0.95);
+        background: #d1e7dd;
+    }
+    100% {
+        opacity: 0;
+        transform: scale(0.8);
+        background: #d1e7dd;
+    }
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    #cropped-images-grid {
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 15px;
+    }
+    
+    .crop-result-actions {
+        flex-direction: column;
+    }
+    
+    .crop-result-actions .button {
+        width: 100%;
+        margin-bottom: 5px;
+    }
+}

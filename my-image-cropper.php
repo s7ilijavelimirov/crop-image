@@ -3,7 +3,7 @@
 /**
  * Plugin Name: Bulk Image Cropper for WooCommerce
  * Description: Bulk crop main product images (parent + variations) with preview/commit system
- * Version: 1.1
+ * Version: 1.2
  * Author: S7Code&Design
  */
 
@@ -93,8 +93,8 @@ class BulkImageCropper
 
         wp_enqueue_script('jquery');
         wp_enqueue_script('heartbeat');
-        wp_enqueue_script('bulk-cropper-js', plugin_dir_url(__FILE__) . 'bulk-admin.js', array('jquery', 'heartbeat'), '1.1', true);
-        wp_enqueue_style('bulk-cropper-css', plugin_dir_url(__FILE__) . 'bulk-admin.css', array(), '1.1');
+        wp_enqueue_script('bulk-cropper-js', plugin_dir_url(__FILE__) . 'bulk-admin.js', array('jquery', 'heartbeat'), '1.2', true);
+        wp_enqueue_style('bulk-cropper-css', plugin_dir_url(__FILE__) . 'bulk-admin.css', array(), '1.2');
 
         wp_localize_script('bulk-cropper-js', 'ajax_object', array(
             'ajax_url' => admin_url('admin-ajax.php'),
@@ -217,8 +217,8 @@ class BulkImageCropper
     {
 ?>
         <div class="wrap">
-            <h1>🚀 Bulk Image Cropper v1.1 - Preview & Commit System</h1>
-            <p>Crop preview mode: Test different padding values before committing changes</p>
+            <h1>🚀 Bulk Image Cropper v1.2 - Simplified</h1>
+            <p>Simple crop workflow: Select → Crop → Preview Results → Save</p>
 
             <div class="bulk-cropper-container">
 
@@ -291,7 +291,7 @@ class BulkImageCropper
                     <div class="images-column">
                         <div class="section">
                             <h2>🎯 Glavne Slike za Kropovanje</h2>
-                            <p><em>Preview mode: Test → Preview → Save (individual padding control per image)</em></p>
+                            <p><em>Individual padding control per image, simple crop workflow</em></p>
 
                             <div class="crop-controls">
                                 <div class="selection-controls">
@@ -300,7 +300,7 @@ class BulkImageCropper
                                     <span id="selected-count">0 selected</span>
                                 </div>
 
-                                <button id="crop-selected" class="button button-primary" disabled>🚀 Bulk Crop (5px)</button>
+                                <button id="crop-selected" class="button button-primary" disabled>Crop Selected (5px)</button>
                             </div>
 
                             <div id="images-grid"></div>
@@ -320,6 +320,7 @@ class BulkImageCropper
 
                 <div class="section" id="cropped-images-section" style="display: none;">
                     <h2>🖼️ Rezultati Kropovanih Slika</h2>
+                    <p><em>Preview your cropped images and save the ones you like</em></p>
                     <div id="cropped-images-grid"></div>
                 </div>
 
