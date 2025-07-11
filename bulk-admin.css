@@ -871,3 +871,23 @@ mark {
     box-shadow: 0 0 0 1px #0073aa;
     outline: 2px solid transparent;
 }
+/* ==========================================================================
+   Simplified Crop Results
+   ========================================================================== */
+
+.cropped-result-item {
+    border: 2px solid #0073aa;
+    background: #f0f6fc;
+}
+
+.cropped-result-item .cropped-image-info h4 {
+    color: #0073aa;
+    font-weight: bold;
+}
+
+.crop-button-dynamic {
+    background: #00a32a !important;
+    border-color: #00a32a !important;
+    color: white !important;
+    font-weight: bold;
+}

@@ -28,12 +28,12 @@ class BulkImageCropper
         add_action('wp_ajax_crop_with_padding', array($this, 'crop_with_padding_ajax'));
         add_action('wp_ajax_restore_image_backup', array($this, 'restore_image_backup_ajax'));
         add_action('wp_ajax_get_backup_status', array($this, 'get_backup_status_ajax'));
-        
+
         // Preview/Commit system
         add_action('wp_ajax_preview_crop', array($this, 'preview_crop_ajax'));
         add_action('wp_ajax_commit_preview', array($this, 'commit_preview_ajax'));
         add_action('wp_ajax_discard_preview', array($this, 'discard_preview_ajax'));
-        
+
         register_activation_hook(__FILE__, array($this, 'activate_plugin'));
         register_deactivation_hook(__FILE__, array($this, 'deactivate_plugin'));
 
@@ -49,7 +49,7 @@ class BulkImageCropper
         if (!file_exists($cropped_dir)) {
             wp_mkdir_p($cropped_dir);
         }
-        
+
         if (!file_exists($preview_dir)) {
             wp_mkdir_p($preview_dir);
         }
@@ -105,20 +105,21 @@ class BulkImageCropper
     }
 
     // PREVIEW CROP - ne diramo original
-    public function preview_crop_ajax() {
+    public function preview_crop_ajax()
+    {
         check_ajax_referer('bulk_cropper_nonce', 'nonce');
-        
+
         set_time_limit(60);
         if (function_exists('wp_raise_memory_limit')) {
             wp_raise_memory_limit();
         }
-        
+
         $image_id = intval($_POST['image_id']);
         $padding = intval($_POST['padding'] ?? 10);
         $padding = max(0, min($padding, 100));
-        
+
         $result = $this->create_preview_crop($image_id, $padding);
-        
+
         if ($result['success']) {
             wp_send_json_success($result);
         } else {
@@ -127,12 +128,13 @@ class BulkImageCropper
     }
 
     // COMMIT PREVIEW - sacuvaj preview kao original
-    public function commit_preview_ajax() {
+    public function commit_preview_ajax()
+    {
         check_ajax_referer('bulk_cropper_nonce', 'nonce');
-        
+
         $image_id = intval($_POST['image_id']);
         $result = $this->commit_preview_to_original($image_id);
-        
+
         if ($result['success']) {
             $this->clear_image_caches($image_id);
             wp_send_json_success($result);
@@ -142,12 +144,13 @@ class BulkImageCropper
     }
 
     // DISCARD PREVIEW - obriši preview
-    public function discard_preview_ajax() {
+    public function discard_preview_ajax()
+    {
         check_ajax_referer('bulk_cropper_nonce', 'nonce');
-        
+
         $image_id = intval($_POST['image_id']);
         $result = $this->discard_preview($image_id);
-        
+
         wp_send_json_success($result);
     }
 
@@ -297,13 +300,7 @@ class BulkImageCropper
                                     <span id="selected-count">0 selected</span>
                                 </div>
 
-                                <div class="padding-controls">
-                                    <label for="padding-input">Global Padding:</label>
-                                    <input type="number" id="padding-input" value="10" min="0" max="100" style="width:60px;"> px
-                                    <button id="crop-with-padding" class="button button-secondary" disabled>🎯 Crop sa Padding</button>
-                                </div>
-
-                                <button id="crop-selected" class="button button-primary" disabled>🚀 Brzi Crop (5px)</button>
+                                <button id="crop-selected" class="button button-primary" disabled>🚀 Bulk Crop (5px)</button>
                             </div>
 
                             <div id="images-grid"></div>
@@ -625,45 +622,46 @@ class BulkImageCropper
     }
 
     // KREIRAJ PREVIEW (ne diramo original!)
-    private function create_preview_crop($image_id, $padding = 10) {
+    private function create_preview_crop($image_id, $padding = 10)
+    {
         $image_path = get_attached_file($image_id);
-        
+
         if (!$image_path || !file_exists($image_path)) {
             return array(
                 'success' => false,
                 'message' => 'Image file not found'
             );
         }
-        
+
         $backup_path = $image_path . '.backup';
         if (!file_exists($backup_path)) {
             copy($image_path, $backup_path);
         }
-        
+
         $upload_dir = wp_upload_dir();
         $preview_dir = $upload_dir['basedir'] . '/crop-previews';
         if (!file_exists($preview_dir)) {
             wp_mkdir_p($preview_dir);
         }
-        
+
         $preview_path = $preview_dir . '/preview_' . $image_id . '_' . $padding . 'px.jpg';
-        
+
         $python_path = $this->get_python_path();
         $script_path = plugin_dir_path(__FILE__) . 'cropper.py';
-        
+
         $command = escapeshellcmd($python_path . ' ' . $script_path . ' ' .
             escapeshellarg($image_path) . ' ' .
             escapeshellarg($preview_path) . ' ' .
             intval($padding));
-        
+
         exec($command . ' 2>&1', $output, $return_var);
         $log_output = implode("\n", $output);
-        
+
         if ($return_var === 0 && file_exists($preview_path)) {
             $preview_url = $upload_dir['baseurl'] . '/crop-previews/' . basename($preview_path) . '?v=' . time();
             $preview_size = getimagesize($preview_path);
             $preview_dimensions = $preview_size ? $preview_size[0] . 'x' . $preview_size[1] : 'Unknown';
-            
+
             return array(
                 'success' => true,
                 'image_id' => $image_id,
@@ -686,32 +684,33 @@ class BulkImageCropper
     }
 
     // COMMIT PREVIEW TO ORIGINAL
-    private function commit_preview_to_original($image_id) {
+    private function commit_preview_to_original($image_id)
+    {
         $image_path = get_attached_file($image_id);
         $upload_dir = wp_upload_dir();
         $preview_dir = $upload_dir['basedir'] . '/crop-previews';
-        
+
         $preview_files = glob($preview_dir . '/preview_' . $image_id . '_*.jpg');
-        
+
         if (empty($preview_files)) {
             return array(
                 'success' => false,
                 'message' => 'No preview found to commit'
             );
         }
-        
-        $latest_preview = array_reduce($preview_files, function($latest, $current) {
+
+        $latest_preview = array_reduce($preview_files, function ($latest, $current) {
             return (filemtime($current) > filemtime($latest)) ? $current : $latest;
         }, $preview_files[0]);
-        
+
         if (copy($latest_preview, $image_path)) {
             $this->regenerate_image_sizes($image_id);
             $image_meta = wp_get_attachment_metadata($image_id);
-            
+
             foreach ($preview_files as $preview_file) {
                 unlink($preview_file);
             }
-            
+
             return array(
                 'success' => true,
                 'image_id' => $image_id,
@@ -728,19 +727,20 @@ class BulkImageCropper
     }
 
     // DISCARD PREVIEW
-    private function discard_preview($image_id) {
+    private function discard_preview($image_id)
+    {
         $upload_dir = wp_upload_dir();
         $preview_dir = $upload_dir['basedir'] . '/crop-previews';
-        
+
         $preview_files = glob($preview_dir . '/preview_' . $image_id . '_*.jpg');
         $deleted_count = 0;
-        
+
         foreach ($preview_files as $preview_file) {
             if (unlink($preview_file)) {
                 $deleted_count++;
             }
         }
-        
+
         return array(
             'success' => true,
             'image_id' => $image_id,

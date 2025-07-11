@@ -8,7 +8,8 @@ jQuery(document).ready(function ($) {
     let isProcessing = false;
     let croppedImages = [];
     let currentSearchTerm = '';
-    // Initialize
+    let imagePreviews = {};
+
     init();
 
     function init() {
@@ -18,7 +19,6 @@ jQuery(document).ready(function ($) {
     }
 
     function setupHeartbeat() {
-        // Keep connection alive during long operations
         wp.heartbeat.enqueue('bulk_cropper_heartbeat', true, true);
 
         $(document).on('heartbeat-send', function (e, data) {
@@ -29,7 +29,7 @@ jQuery(document).ready(function ($) {
 
         $(document).on('heartbeat-tick', function (e, data) {
             if (data.bulk_cropper_heartbeat && data.bulk_cropper_heartbeat === 'alive') {
-                console.log('Heartbeat: Connection alive');
+                console.log('Heartbeat alive');
             }
         });
     }
@@ -47,16 +47,14 @@ jQuery(document).ready(function ($) {
             loadCategoryProducts();
         });
 
-        // Reset plugin
         $('#reset-plugin').on('click', function () {
-            if (confirm('Reset all data and start fresh? This will clear all selections and results.')) {
+            if (confirm('Reset all data and start fresh?')) {
                 resetPluginState();
             }
         });
 
         // Pagination
         $('#prev-page').on('click', function () {
-            console.log('Prev clicked - currentPage:', currentPage, 'isProcessing:', isProcessing);
             if (currentPage > 1 && !isProcessing) {
                 currentPage--;
                 loadCategoryProducts();
@@ -64,7 +62,6 @@ jQuery(document).ready(function ($) {
         });
 
         $('#next-page').on('click', function () {
-            console.log('Next clicked - currentPage:', currentPage, 'totalPages:', totalPages, 'isProcessing:', isProcessing);
             if (currentPage < totalPages && !isProcessing) {
                 currentPage++;
                 loadCategoryProducts();
@@ -77,6 +74,41 @@ jQuery(document).ready(function ($) {
                 currentPage = 1;
                 loadCategoryProducts();
             }
+        });
+
+        // Search functionality
+        $('#search-products').on('input', function () {
+            let searchTerm = $(this).val().trim();
+            $('#clear-search').toggle(searchTerm.length > 0);
+
+            if (searchTerm.length > 0) {
+                $(this).closest('.category-controls').addClass('search-active');
+            } else {
+                $(this).closest('.category-controls').removeClass('search-active');
+            }
+
+            if (searchTerm.length >= 2 || searchTerm.length === 0) {
+                currentSearchTerm = searchTerm;
+                currentPage = 1;
+
+                clearTimeout(window.searchTimeout);
+                window.searchTimeout = setTimeout(function () {
+                    if (!isProcessing) {
+                        loadCategoryProducts();
+                    }
+                }, 500);
+            }
+        });
+
+        $('#clear-search').on('click', function () {
+            $('#search-products').val('').focus();
+            $('.category-controls').removeClass('search-active');
+            currentSearchTerm = '';
+            currentPage = 1;
+            if (!isProcessing) {
+                loadCategoryProducts();
+            }
+            $(this).hide();
         });
 
         // Product selection
@@ -96,19 +128,11 @@ jQuery(document).ready(function ($) {
             updateSelectedProductsDisplay();
         });
 
-        // Load images
         $('#load-all-selected-images').on('click', function () {
             if (selectedProducts.length === 0) {
-                showNotification('❌ Please select products first', 'error');
+                showNotification('Please select products first', 'error');
                 return;
             }
-
-            if (selectedProducts.length > 20) {
-                if (!confirm('You selected ' + selectedProducts.length + ' products. This might take a while. Continue?')) {
-                    return;
-                }
-            }
-
             loadSelectedProductsImages();
         });
 
@@ -128,7 +152,6 @@ jQuery(document).ready(function ($) {
                 selectedImages = selectedImages.filter(id => id !== imageId);
             }
             updateSelectedImagesDisplay();
-            updatePaddingControls(); // DODANO
         });
 
         $('#select-all-images').on('click', function () {
@@ -139,10 +162,60 @@ jQuery(document).ready(function ($) {
             $('.image-checkbox').prop('checked', false).trigger('change');
         });
 
-        // Standard cropping (5px)
+        // PREVIEW CROP (ne diramo original)
+        $(document).on('click', '.preview-crop', function () {
+            if (isProcessing) {
+                showNotification('Please wait for current operation to complete', 'warning');
+                return;
+            }
+
+            let imageId = $(this).data('image-id');
+            let paddingInput = $(this).closest('.image-item').find('.padding-input');
+            let padding = parseInt(paddingInput.val()) || 10;
+
+            previewCropImage(imageId, padding, $(this));
+        });
+
+        // COMMIT PREVIEW (sacuvaj kao original)
+        $(document).on('click', '.commit-preview', function () {
+            if (isProcessing) {
+                showNotification('Please wait for current operation to complete', 'warning');
+                return;
+            }
+
+            let imageId = $(this).data('image-id');
+
+            if (!confirm('Save this preview as the final cropped image? This will replace the original.')) {
+                return;
+            }
+
+            commitPreview(imageId, $(this));
+        });
+
+        // DISCARD PREVIEW (obriši preview)
+        $(document).on('click', '.discard-preview', function () {
+            let imageId = $(this).data('image-id');
+            discardPreview(imageId);
+        });
+
+        // AUTO-PREVIEW sa debounce
+        $(document).on('input', '.padding-input', function () {
+            let imageId = $(this).closest('.image-item').data('image-id');
+            let padding = parseInt($(this).val()) || 10;
+
+            clearTimeout(window.paddingTimeout);
+            window.paddingTimeout = setTimeout(function () {
+                let previewBtn = $('.image-item[data-image-id="' + imageId + '"] .preview-crop');
+                if (previewBtn.length && !isProcessing) {
+                    previewCropImage(imageId, padding, previewBtn);
+                }
+            }, 800);
+        });
+
+        // Standard cropping
         $(document).on('click', '.crop-single', function () {
             if (isProcessing) {
-                showNotification('⚠️ Please wait for current operation to complete', 'warning');
+                showNotification('Please wait for current operation to complete', 'warning');
                 return;
             }
 
@@ -152,96 +225,82 @@ jQuery(document).ready(function ($) {
 
         $('#crop-selected').on('click', function () {
             if (isProcessing) {
-                showNotification('⚠️ Please wait for current operation to complete', 'warning');
+                showNotification('Please wait for current operation to complete', 'warning');
                 return;
             }
 
             if (selectedImages.length === 0) {
-                showNotification('❌ Please select images to crop', 'error');
+                showNotification('Please select images to crop', 'error');
                 return;
             }
 
-            if (selectedImages.length > 50) {
-                showNotification('❌ Maximum 50 images per batch. Please select fewer images.', 'error');
-                return;
-            }
-
-            if (!confirm('Crop ' + selectedImages.length + ' selected MAIN images with 5px padding? This will modify the original files and cannot be undone.')) {
+            if (!confirm('Crop ' + selectedImages.length + ' selected images with 5px padding?')) {
                 return;
             }
 
             startBulkCrop();
         });
 
-        // Enhanced cropping with custom padding
         $('#crop-with-padding').on('click', function () {
             if (isProcessing) {
-                showNotification('⚠️ Please wait for current operation to complete', 'warning');
+                showNotification('Please wait for current operation to complete', 'warning');
                 return;
             }
 
             if (selectedImages.length === 0) {
-                showNotification('❌ Please select images to crop', 'error');
-                return;
-            }
-
-            if (selectedImages.length > 20) {
-                showNotification('❌ Maximum 20 images per batch for padding crop.', 'error');
+                showNotification('Please select images to crop', 'error');
                 return;
             }
 
             let padding = parseInt($('#padding-input').val()) || 10;
             if (padding < 0 || padding > 100) {
-                showNotification('❌ Padding must be between 0-100px', 'error');
+                showNotification('Padding must be between 0-100px', 'error');
                 return;
             }
 
-            if (!confirm('Crop ' + selectedImages.length + ' images with ' + padding + 'px padding? This will modify the original files.')) {
+            if (!confirm('Crop ' + selectedImages.length + ' images with ' + padding + 'px padding?')) {
                 return;
             }
 
             startBulkCropWithPadding(padding);
         });
 
-        // Restore individual images
+        // Restore
         $(document).on('click', '.restore-backup', function () {
             if (isProcessing) {
-                showNotification('⚠️ Please wait for current operation to complete', 'warning');
+                showNotification('Please wait for current operation to complete', 'warning');
                 return;
             }
 
             let imageId = $(this).data('image-id');
-            if (!confirm('Restore image ' + imageId + ' from backup? This will replace current cropped version.')) {
+            if (!confirm('Restore image ' + imageId + ' from backup?')) {
                 return;
             }
 
             restoreImageFromBackup(imageId, $(this));
         });
 
-        // Toggle detailed log
         $('#toggle-detailed-log').on('click', function () {
             $('#progress-log').toggle();
         });
     }
 
     function resetPluginState() {
-        // Stop svi timeout-ovi
         clearTimeout(window.searchTimeout);
 
-        // Reset varijabli
         selectedImages = [];
         selectedProducts = [];
         currentCategory = '';
-        currentSearchTerm = ''; // Dodano
+        currentSearchTerm = '';
         currentPage = 1;
         totalPages = 1;
-        isProcessing = false; // VAŽNO
+        isProcessing = false;
         croppedImages = [];
+        imagePreviews = {};
 
-        // Clear UI
         $('#category-select').val('');
-        $('#search-products').val(''); // Dodano
-        $('#clear-search').hide(); // Dodano
+        $('#search-products').val('');
+        $('#clear-search').hide();
         $('#load-category-products').prop('disabled', true);
         $('#category-info').html('');
         $('#products-grid').html('');
@@ -254,24 +313,22 @@ jQuery(document).ready(function ($) {
         $('#live-progress').hide();
         $('#quick-results').hide();
 
-        // Reset counters
         $('#product-count').text('');
         $('#page-info').text('Page 1 of 1');
         $('#selected-products-count').text('0 selected');
         $('#selected-count').text('0 selected');
 
-        // Reset buttons
         updateSelectedProductsDisplay();
         updateSelectedImagesDisplay();
-        updatePaginationButtons(); // Ovo će sada raditi jer je isProcessing = false
+        updatePaginationButtons();
 
-        showNotification('✅ Plugin reset successfully', 'success');
+        showNotification('Plugin reset successfully', 'success');
     }
 
     function updateCategoryInfo() {
         if (currentCategory) {
             let categoryName = $('#category-select option:selected').text();
-            $('#category-info').html('<p>Selected: <strong>' + categoryName + '</strong> (main images only)</p>');
+            $('#category-info').html('<p>Selected: <strong>' + categoryName + '</strong></p>');
         } else {
             $('#category-info').html('');
         }
@@ -293,12 +350,12 @@ jQuery(document).ready(function ($) {
                     displayCategories(response.data);
                 } else {
                     $('#category-select').html('<option value="">Failed to load categories</option>');
-                    showNotification('❌ Failed to load categories', 'error');
+                    showNotification('Failed to load categories', 'error');
                 }
             },
             error: function (xhr, status, error) {
                 $('#category-select').html('<option value="">Error loading categories</option>');
-                showNotification('❌ Error loading categories: ' + error, 'error');
+                showNotification('Error loading categories: ' + error, 'error');
             }
         });
     }
@@ -318,15 +375,7 @@ jQuery(document).ready(function ($) {
         if (!currentCategory && !currentSearchTerm) return;
 
         isProcessing = true;
-
-        // Search loading indikator
-        if (currentSearchTerm) {
-            updateLiveProgress(0, 100, 'Pretražujem "' + currentSearchTerm + '"...');
-            $('#search-products').css('background', 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'20\' height=\'20\' viewBox=\'0 0 20 20\'%3E%3Cpath fill=\'%23999\' d=\'M10 3.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM2 10a8 8 0 1116 0 8 8 0 01-16 0z\' opacity=\'.4\'/%3E%3Cpath fill=\'%23999\' d=\'M10 3.5a6.5 6.5 0 011.5.18V2.27A8.02 8.02 0 0010 2a8 8 0 00-1.5.27v1.41A6.48 6.48 0 0110 3.5z\'%3E%3CanimateTransform attributeName=\'transform\' type=\'rotate\' from=\'0 10 10\' to=\'360 10 10\' dur=\'1s\' repeatCount=\'indefinite\'/%3E%3C/path%3E%3C/svg%3E") no-repeat right 10px center');
-        } else {
-            updateLiveProgress(0, 100, 'Loading products...');
-        }
-
+        updateLiveProgress(0, 100, 'Loading products...');
         $('#live-progress').show();
         $('#products-grid').html('<div class="loading">Loading products...</div>');
 
@@ -351,32 +400,19 @@ jQuery(document).ready(function ($) {
                 if (response.success) {
                     displayProducts(response.data.products);
                     updatePagination(response.data.pagination);
-
-                    if (currentSearchTerm) {
-                        updateLiveProgress(100, 100, 'Pronađeno ' + response.data.pagination.total_products + ' proizvoda za "' + currentSearchTerm + '"');
-                        // Ukloni loading spinner
-                        $('#search-products').css('background', 'none');
-                    } else {
-                        updateLiveProgress(100, 100, 'Products loaded successfully');
-                    }
+                    updateLiveProgress(100, 100, 'Products loaded successfully');
 
                     setTimeout(function () {
                         $('#live-progress').fadeOut();
                     }, 2000);
                 } else {
                     $('#products-grid').html('<div class="error">Failed to load products</div>');
-                    showNotification('❌ Failed to load products', 'error');
-                    totalPages = 1;
-                    currentPage = 1;
-                    $('#search-products').css('background', 'none');
+                    showNotification('Failed to load products', 'error');
                 }
             },
             error: function (xhr, status, error) {
                 $('#products-grid').html('<div class="error">Error loading products: ' + error + '</div>');
-                showNotification('❌ Error loading products: ' + error, 'error');
-                totalPages = 1;
-                currentPage = 1;
-                $('#search-products').css('background', 'none');
+                showNotification('Error loading products: ' + error, 'error');
             },
             complete: function () {
                 isProcessing = false;
@@ -384,30 +420,23 @@ jQuery(document).ready(function ($) {
             }
         });
     }
+
     function displayProducts(products) {
         if (products.length === 0) {
             let message = currentSearchTerm ?
-                'Nema proizvoda sa glavnim slikama za pretragu "' + currentSearchTerm + '"' :
-                'No products with main images found in this category.';
+                'No products found for search "' + currentSearchTerm + '"' :
+                'No products found in this category.';
             $('#products-grid').html('<div class="no-products">' + message + '</div>');
             return;
         }
 
         let html = '<div class="products-container">';
 
-        // Search rezultati header
-        if (currentSearchTerm) {
-            html += '<div class="search-results-header" style="background: #f0f6fc; padding: 10px; margin-bottom: 15px; border-left: 4px solid #0073aa;">';
-            html += '<strong>Rezultati pretrage:</strong> "' + currentSearchTerm + '" (' + products.length + ' proizvoda)';
-            html += '</div>';
-        }
-
         products.forEach(function (product) {
             let isSelected = selectedProducts.indexOf(product.id) !== -1;
             let checkedAttr = isSelected ? 'checked' : '';
             let selectedClass = isSelected ? 'selected' : '';
 
-            // Highlight search term u nazivu
             let highlightedTitle = product.title;
             if (currentSearchTerm) {
                 let regex = new RegExp('(' + currentSearchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
@@ -427,7 +456,7 @@ jQuery(document).ready(function ($) {
             html += '</div>';
             html += '<div class="product-info">';
             html += '<h3 title="' + product.title + '">' + highlightedTitle + '</h3>';
-            html += '<div class="product-meta">ID: ' + product.id + ' | ' + product.type_label + ' | ' + product.image_count + ' main images</div>';
+            html += '<div class="product-meta">ID: ' + product.id + ' | ' + product.type_label + ' | ' + product.image_count + ' images</div>';
             if (product.price) {
                 html += '<div class="product-price">' + product.price + '</div>';
             }
@@ -446,9 +475,6 @@ jQuery(document).ready(function ($) {
         let pageInfo = 'Page ' + currentPage + ' of ' + totalPages;
         $('#page-info').text(pageInfo);
         $('#product-count').text('(' + pagination.showing + ' of ' + pagination.total_products + ')');
-
-        // Ne pozivaj updatePaginationButtons() ovde jer je isProcessing još true
-        // updatePaginationButtons(); // <-- UKLONI
     }
 
     function updatePaginationButtons() {
@@ -457,15 +483,6 @@ jQuery(document).ready(function ($) {
 
         $('#prev-page').prop('disabled', prevDisabled);
         $('#next-page').prop('disabled', nextDisabled);
-
-        // DEBUG sa više info
-        console.log('=== PAGINATION DEBUG ===');
-        console.log('currentPage:', currentPage);
-        console.log('totalPages:', totalPages);
-        console.log('isProcessing:', isProcessing);
-        console.log('prevDisabled:', prevDisabled);
-        console.log('nextDisabled:', nextDisabled);
-        console.log('========================');
     }
 
     function updateSelectedProductsDisplay() {
@@ -489,7 +506,7 @@ jQuery(document).ready(function ($) {
             let productCard = $('.product-card[data-product-id="' + productId + '"]');
             if (productCard.length) {
                 let productTitle = productCard.find('h3').attr('title') || productCard.find('h3').text();
-                let imageCount = productCard.find('.product-meta').text().match(/(\d+) main images/);
+                let imageCount = productCard.find('.product-meta').text().match(/(\d+) images/);
                 let count = imageCount ? imageCount[1] : '0';
 
                 html += '<span class="selected-product-tag" title="' + productTitle + '">' +
@@ -508,6 +525,7 @@ jQuery(document).ready(function ($) {
     function clearAllSelections() {
         selectedProducts = [];
         selectedImages = [];
+        imagePreviews = {};
         $('.product-checkbox').prop('checked', false);
         $('.product-card').removeClass('selected');
         $('.image-checkbox').prop('checked', false);
@@ -515,19 +533,18 @@ jQuery(document).ready(function ($) {
         $('.selected-summary').hide();
         updateSelectedProductsDisplay();
         updateSelectedImagesDisplay();
-        updatePaddingControls();
 
-        showNotification('✅ All selections cleared', 'success');
+        showNotification('All selections cleared', 'success');
     }
 
     function loadSelectedProductsImages() {
         if (selectedProducts.length === 0) return;
 
         isProcessing = true;
-        updateLiveProgress(0, 100, 'Loading main images...');
+        updateLiveProgress(0, 100, 'Loading images...');
         $('#live-progress').show();
 
-        $('#images-grid').html('<div class="loading">Loading main images for ' + selectedProducts.length + ' products...</div>');
+        $('#images-grid').html('<div class="loading">Loading images for ' + selectedProducts.length + ' products...</div>');
         selectedImages = [];
         updateSelectedImagesDisplay();
 
@@ -543,19 +560,19 @@ jQuery(document).ready(function ($) {
             success: function (response) {
                 if (response.success) {
                     displayImages(response.data.images, response.data);
-                    updateLiveProgress(100, 100, 'Main images loaded successfully');
+                    updateLiveProgress(100, 100, 'Images loaded successfully');
 
                     setTimeout(function () {
                         $('#live-progress').fadeOut();
                     }, 2000);
                 } else {
                     $('#images-grid').html('<div class="error">Failed to load images</div>');
-                    showNotification('❌ Failed to load images', 'error');
+                    showNotification('Failed to load images', 'error');
                 }
             },
             error: function (xhr, status, error) {
                 $('#images-grid').html('<div class="error">Error loading images: ' + error + '</div>');
-                showNotification('❌ Error loading images: ' + error, 'error');
+                showNotification('Error loading images: ' + error, 'error');
             },
             complete: function () {
                 isProcessing = false;
@@ -565,15 +582,14 @@ jQuery(document).ready(function ($) {
 
     function displayImages(images, data) {
         if (images.length === 0) {
-            $('#images-grid').html('<div class="no-images">No main images found for selected products.</div>');
+            $('#images-grid').html('<div class="no-images">No images found for selected products.</div>');
             return;
         }
 
         let html = '<div class="images-info">';
-        html += '<strong>Total Main Images:</strong> ' + data.total_images + ' from ' + data.products_count + ' products (main + variations only)';
+        html += '<strong>Total Images:</strong> ' + data.total_images + ' from ' + data.products_count + ' products';
         html += '</div>';
 
-        // Group images by product
         let imagesByProduct = {};
         images.forEach(function (image) {
             if (!imagesByProduct[image.product_id]) {
@@ -587,7 +603,7 @@ jQuery(document).ready(function ($) {
             let productName = productImages[0].product_name;
 
             html += '<div class="product-images-group">';
-            html += '<div class="product-group-title">' + productName + ' (' + productImages.length + ' main images)</div>';
+            html += '<div class="product-group-title">' + productName + ' (' + productImages.length + ' images)</div>';
             html += '<div class="product-images-grid">';
 
             productImages.forEach(function (image) {
@@ -606,10 +622,23 @@ jQuery(document).ready(function ($) {
                 html += '<div class="image-title" title="' + image.title + '">' + image.title + '</div>';
                 html += '<p><strong>ID:</strong> ' + image.id + '</p>';
                 html += '<p><strong>Size:</strong> ' + image.size + '</p>';
+
+                // Individual padding control
+                html += '<div class="individual-padding">';
+                html += '<label>Padding: </label>';
+                html += '<input type="number" class="padding-input" value="10" min="0" max="100" style="width:50px;"> px';
+                html += '</div>';
+
                 html += '<div class="image-actions">';
-                html += '<button class="button button-small crop-single" data-image-id="' + image.id + '">Crop</button>';
+                html += '<button class="button button-small preview-crop" data-image-id="' + image.id + '">Preview</button>';
+                html += '<button class="button button-small crop-with-custom-padding" data-image-id="' + image.id + '">Crop</button>';
+                html += '<button class="button button-small crop-single" data-image-id="' + image.id + '">Quick Crop (5px)</button>';
                 html += '<a href="' + image.full_url + '" target="_blank" class="button button-small">View</a>';
                 html += '</div>';
+
+                // Preview container (hidden initially)
+                html += '<div class="preview-container" style="display: none;"></div>';
+
                 html += '</div>';
                 html += '</div>';
             });
@@ -625,52 +654,327 @@ jQuery(document).ready(function ($) {
         let count = selectedImages.length;
         $('#selected-count').text(count + ' selected');
         $('#crop-selected').prop('disabled', count === 0 || isProcessing);
-        $('#crop-with-padding').prop('disabled', count === 0 || isProcessing); // DODANO
-    }
-
-    function updatePaddingControls() {
-        let count = selectedImages.length;
         $('#crop-with-padding').prop('disabled', count === 0 || isProcessing);
-
-        // Load backup status for selected images
-        if (count > 0) {
-            loadBackupStatus(selectedImages);
-        }
     }
 
-    function loadBackupStatus(imageIds) {
+    // CROP IMAGE WITH PADDING (kropi i pošalji u results, ne diraj original)
+    function cropImageWithPadding(imageId, padding, button) {
+        isProcessing = true;
+        button.prop('disabled', true).text('Cropping...');
+
+        updateLiveProgress(0, 100, 'Creating cropped version...');
+        $('#live-progress').show();
+
         $.ajax({
             url: ajax_object.ajax_url,
             type: 'POST',
+            timeout: 60000,
             data: {
-                action: 'get_backup_status',
-                image_ids: imageIds,
+                action: 'preview_crop', // Koristimo preview_crop da ne diramo original
+                image_id: imageId,
+                padding: padding,
                 nonce: ajax_object.nonce
             },
             success: function (response) {
                 if (response.success) {
-                    updateBackupButtons(response.data);
+                    let data = response.data;
+                    
+                    // Dodaj u results sekciju
+                    addCropResultToResults(imageId, data, padding);
+
+                    button.text('Cropped').addClass('success');
+                    updateLiveProgress(100, 100, 'Cropped version created');
+                    showQuickResult('Cropped version created for image ' + imageId + ' (' + padding + 'px padding)');
+
+                    setTimeout(function () {
+                        $('#live-progress').fadeOut();
+                    }, 2000);
+                } else {
+                    button.text('Crop Failed').addClass('failed');
+                    updateLiveProgress(100, 100, 'Crop failed');
+                    showQuickResult('Crop failed for image ' + imageId + ': ' + (response.data?.message || 'Unknown error'), true);
                 }
+            },
+            error: function (xhr, status, error) {
+                button.text('Error').addClass('failed');
+                updateLiveProgress(100, 100, 'Error occurred');
+                showQuickResult('Crop error for image ' + imageId + ': ' + error, true);
+            },
+            complete: function () {
+                isProcessing = false;
+                setTimeout(function () {
+                    button.prop('disabled', false);
+                    if (!button.hasClass('success') && !button.hasClass('failed')) {
+                        button.text('Crop');
+                    }
+                }, 3000);
             }
         });
     }
 
-    function updateBackupButtons(backupStatus) {
-        Object.keys(backupStatus).forEach(function (imageId) {
-            let imageItem = $('.image-item[data-image-id="' + imageId + '"]');
-            let actionsDiv = imageItem.find('.image-actions');
+    // SAVE RESULT AS ORIGINAL (sacuvaj kao finalnu sliku)
+    function saveResultAsOriginal(imageId, button) {
+        isProcessing = true;
+        button.prop('disabled', true).text('Saving...');
 
-            // Remove existing restore button
-            actionsDiv.find('.restore-backup').remove();
+        updateLiveProgress(0, 100, 'Saving as original image...');
+        $('#live-progress').show();
 
-            if (backupStatus[imageId].has_backup) {
-                let backupDate = new Date(backupStatus[imageId].backup_date).toLocaleDateString();
-                actionsDiv.append(
-                    '<button class="button button-small restore-backup" data-image-id="' + imageId + '" ' +
-                    'title="Backup from ' + backupDate + '">🔄 Restore</button>'
-                );
+        $.ajax({
+            url: ajax_object.ajax_url,
+            type: 'POST',
+            timeout: 60000,
+            data: {
+                action: 'commit_preview',
+                image_id: imageId,
+                nonce: ajax_object.nonce
+            },
+            success: function (response) {
+                if (response.success) {
+                    // Ukloni iz results
+                    $('.cropped-result-item[data-image-id="' + imageId + '"]').fadeOut(500, function() {
+                        $(this).remove();
+                    });
+                    
+                    // Refresh original sliku
+                    refreshImagePreview(imageId);
+
+                    button.text('Saved').addClass('success');
+                    updateLiveProgress(100, 100, 'Image saved successfully');
+                    showQuickResult('Image ' + imageId + ' saved as original');
+
+                    setTimeout(function () {
+                        $('#live-progress').fadeOut();
+                    }, 2000);
+                } else {
+                    button.text('Save Failed').addClass('failed');
+                    updateLiveProgress(100, 100, 'Save failed');
+                    showQuickResult('Save failed for image ' + imageId + ': ' + (response.data?.message || 'Unknown error'), true);
+                }
+            },
+            error: function (xhr, status, error) {
+                button.text('Error').addClass('failed');
+                updateLiveProgress(100, 100, 'Error occurred');
+                showQuickResult('Save error for image ' + imageId + ': ' + error, true);
+            },
+            complete: function () {
+                isProcessing = false;
+                setTimeout(function () {
+                    button.prop('disabled', false);
+                    if (!button.hasClass('success') && !button.hasClass('failed')) {
+                        button.text('Save');
+                    }
+                }, 3000);
             }
         });
+    }
+
+    // DISCARD RESULT (ukloni iz results)
+    function discardResult(imageId) {
+        $.ajax({
+            url: ajax_object.ajax_url,
+            type: 'POST',
+            data: {
+                action: 'discard_preview',
+                image_id: imageId,
+                nonce: ajax_object.nonce
+            },
+            success: function (response) {
+                $('.cropped-result-item[data-image-id="' + imageId + '"]').fadeOut(500, function() {
+                    $(this).remove();
+                });
+                showNotification('Cropped result discarded', 'success');
+            }
+        });
+    }
+
+    // DODAJ CROP RESULT U RESULTS SEKCIJU
+    function addCropResultToResults(imageId, previewData, padding) {
+        $('#cropped-images-section').show();
+
+        let imageItem = $('.image-item[data-image-id="' + imageId + '"]');
+        let imageTitle = imageItem.find('.image-title').text() || 'Image ' + imageId;
+        let productName = imageItem.closest('.product-images-group').find('.product-group-title').text() || 'Unknown Product';
+
+        // Ukloni postojeći result za ovu sliku ako postoji
+        $('.cropped-result-item[data-image-id="' + imageId + '"]').remove();
+
+        let html = '<div class="cropped-result-item" data-image-id="' + imageId + '">';
+        html += '<div class="cropped-image-preview">';
+        html += '<img src="' + previewData.preview_url + '" alt="Cropped ' + imageTitle + '" loading="lazy">';
+        html += '</div>';
+        html += '<div class="cropped-image-info">';
+        html += '<h4 title="' + imageTitle + '">' + imageTitle + '</h4>';
+        html += '<div class="cropped-image-meta">Product: ' + productName + '</div>';
+        html += '<div class="cropped-image-meta">ID: ' + imageId + '</div>';
+        html += '<div class="cropped-image-meta">Size: ' + previewData.preview_size + '</div>';
+        html += '<div class="cropped-image-meta">Padding: ' + padding + 'px</div>';
+        html += '<div class="cropped-image-actions">';
+        html += '<button class="button button-primary save-result" data-image-id="' + imageId + '">Save as Original</button>';
+        html += '<button class="button button-secondary discard-result" data-image-id="' + imageId + '">Discard</button>';
+        html += '<a href="' + previewData.preview_url + '" target="_blank" class="button button-small">View Full</a>';
+        html += '</div>';
+        html += '</div>';
+        html += '</div>';
+
+        $('#cropped-images-grid').prepend(html);
+    }
+    function previewCropImage(imageId, padding, button) {
+        isProcessing = true;
+        button.prop('disabled', true).text('Creating Preview...');
+
+        updateLiveProgress(0, 100, 'Creating crop preview...');
+        $('#live-progress').show();
+
+        $.ajax({
+            url: ajax_object.ajax_url,
+            type: 'POST',
+            timeout: 60000,
+            data: {
+                action: 'preview_crop',
+                image_id: imageId,
+                padding: padding,
+                nonce: ajax_object.nonce
+            },
+            success: function (response) {
+                if (response.success) {
+                    let data = response.data;
+                    imagePreviews[imageId] = data;
+                    updateImagePreview(imageId, data);
+
+                    button.text('Preview Created').addClass('success');
+                    updateLiveProgress(100, 100, 'Preview created successfully');
+                    showQuickResult('Preview created for image ' + imageId + ' (' + padding + 'px padding)');
+
+                    setTimeout(function () {
+                        $('#live-progress').fadeOut();
+                    }, 2000);
+                } else {
+                    button.text('Preview Failed').addClass('failed');
+                    updateLiveProgress(100, 100, 'Preview failed');
+                    showQuickResult('Preview failed for image ' + imageId + ': ' + (response.data?.message || 'Unknown error'), true);
+                }
+            },
+            error: function (xhr, status, error) {
+                button.text('Error').addClass('failed');
+                updateLiveProgress(100, 100, 'Error occurred');
+                showQuickResult('Preview error for image ' + imageId + ': ' + error, true);
+            },
+            complete: function () {
+                isProcessing = false;
+                setTimeout(function () {
+                    button.prop('disabled', false);
+                    if (!button.hasClass('success') && !button.hasClass('failed')) {
+                        button.text('Preview');
+                    }
+                }, 3000);
+            }
+        });
+    }
+
+    // COMMIT PREVIEW FUNKCIJA
+    function commitPreview(imageId, button) {
+        if (!imagePreviews[imageId]) {
+            showNotification('No preview to commit', 'error');
+            return;
+        }
+
+        isProcessing = true;
+        button.prop('disabled', true).text('Saving...');
+
+        updateLiveProgress(0, 100, 'Saving cropped image...');
+        $('#live-progress').show();
+
+        $.ajax({
+            url: ajax_object.ajax_url,
+            type: 'POST',
+            timeout: 60000,
+            data: {
+                action: 'commit_preview',
+                image_id: imageId,
+                nonce: ajax_object.nonce
+            },
+            success: function (response) {
+                if (response.success) {
+                    delete imagePreviews[imageId];
+                    refreshImagePreview(imageId);
+                    hidePreviewUI(imageId);
+
+                    button.text('Saved').addClass('success');
+                    updateLiveProgress(100, 100, 'Image saved successfully');
+                    showQuickResult('Image ' + imageId + ' saved successfully');
+
+                    setTimeout(function () {
+                        $('#live-progress').fadeOut();
+                    }, 2000);
+                } else {
+                    button.text('Save Failed').addClass('failed');
+                    updateLiveProgress(100, 100, 'Save failed');
+                    showQuickResult('Save failed for image ' + imageId + ': ' + (response.data?.message || 'Unknown error'), true);
+                }
+            },
+            error: function (xhr, status, error) {
+                button.text('Error').addClass('failed');
+                updateLiveProgress(100, 100, 'Error occurred');
+                showQuickResult('Save error for image ' + imageId + ': ' + error, true);
+            },
+            complete: function () {
+                isProcessing = false;
+                setTimeout(function () {
+                    button.prop('disabled', false);
+                    if (!button.hasClass('success') && !button.hasClass('failed')) {
+                        button.text('Save');
+                    }
+                }, 3000);
+            }
+        });
+    }
+
+    // DISCARD PREVIEW FUNKCIJA
+    function discardPreview(imageId) {
+        $.ajax({
+            url: ajax_object.ajax_url,
+            type: 'POST',
+            data: {
+                action: 'discard_preview',
+                image_id: imageId,
+                nonce: ajax_object.nonce
+            },
+            success: function (response) {
+                delete imagePreviews[imageId];
+                hidePreviewUI(imageId);
+                showNotification('Preview discarded', 'success');
+            }
+        });
+    }
+
+    // AŽURIRAJ IMAGE PREVIEW UI
+    function updateImagePreview(imageId, previewData) {
+        let imageItem = $('.image-item[data-image-id="' + imageId + '"]');
+        let previewContainer = imageItem.find('.preview-container');
+
+        let previewHtml = '<div class="crop-preview">';
+        previewHtml += '<div class="preview-header">Crop Preview (' + previewData.padding_used + 'px padding)</div>';
+        previewHtml += '<div class="preview-image">';
+        previewHtml += '<img src="' + previewData.preview_url + '" alt="Crop Preview" style="max-width: 100%; height: auto; border: 2px solid #0073aa;">';
+        previewHtml += '</div>';
+        previewHtml += '<div class="preview-info">Size: ' + previewData.preview_size + '</div>';
+        previewHtml += '<div class="preview-actions">';
+        previewHtml += '<button class="button button-primary commit-preview" data-image-id="' + imageId + '">Save This Crop</button>';
+        previewHtml += '<button class="button button-secondary discard-preview" data-image-id="' + imageId + '">Try Again</button>';
+        previewHtml += '</div>';
+        previewHtml += '</div>';
+
+        previewContainer.html(previewHtml);
+        previewContainer.show();
+        imageItem.addClass('has-preview');
+    }
+
+    // UKLONI PREVIEW UI
+    function hidePreviewUI(imageId) {
+        let imageItem = $('.image-item[data-image-id="' + imageId + '"]');
+        imageItem.find('.preview-container').hide().html('');
+        imageItem.removeClass('has-preview');
     }
 
     function updateLiveProgress(current, total, message) {
@@ -696,7 +1000,7 @@ jQuery(document).ready(function ($) {
         isProcessing = true;
         button.prop('disabled', true).text('Cropping...');
 
-        updateLiveProgress(0, 100, 'Cropping main image ' + imageId + '...');
+        updateLiveProgress(0, 100, 'Cropping image ' + imageId + '...');
         $('#live-progress').show();
 
         $.ajax({
@@ -710,37 +1014,32 @@ jQuery(document).ready(function ($) {
             },
             success: function (response) {
                 if (response.success) {
-                    button.text('✓ Cropped').addClass('cropped');
-                    updateLiveProgress(100, 100, 'Main image cropped successfully');
-                    showQuickResult('✅ Main image ' + imageId + ' cropped successfully');
+                    button.text('Cropped').addClass('cropped');
+                    updateLiveProgress(100, 100, 'Image cropped successfully');
+                    showQuickResult('Image ' + imageId + ' cropped successfully');
                     refreshImagePreview(imageId);
-
-                    // Add to cropped images display
                     addCroppedImageToResults(response.data);
-
-                    // Update backup status
-                    loadBackupStatus([imageId]);
 
                     setTimeout(function () {
                         $('#live-progress').fadeOut();
                     }, 2000);
                 } else {
-                    button.text('❌ Failed').addClass('failed');
+                    button.text('Failed').addClass('failed');
                     updateLiveProgress(100, 100, 'Crop failed');
-                    showQuickResult('❌ Main image ' + imageId + ' failed: ' + (response.data?.message || 'Unknown error'), true);
+                    showQuickResult('Image ' + imageId + ' failed: ' + (response.data?.message || 'Unknown error'), true);
                 }
             },
             error: function (xhr, status, error) {
-                button.text('❌ Error').addClass('failed');
+                button.text('Error').addClass('failed');
                 updateLiveProgress(100, 100, 'Error occurred');
-                showQuickResult('❌ Main image ' + imageId + ' error: ' + error, true);
+                showQuickResult('Image ' + imageId + ' error: ' + error, true);
             },
             complete: function () {
                 isProcessing = false;
                 setTimeout(function () {
                     button.prop('disabled', false);
                     if (!button.hasClass('cropped') && !button.hasClass('failed')) {
-                        button.text('Crop');
+                        button.text('Quick Crop');
                     }
                 }, 3000);
             }
@@ -750,34 +1049,28 @@ jQuery(document).ready(function ($) {
     function startBulkCrop() {
         isProcessing = true;
         $('#detailed-progress-section').show();
-        $('#crop-selected').prop('disabled', true).text('🔄 Cropping...');
+        $('#crop-selected').prop('disabled', true).text('Cropping...');
 
-        // Scroll to progress section smoothly
-        $('html, body').animate({
-            scrollTop: $('#detailed-progress-section').offset().top - 100
-        }, 800);
-
-        updateLiveProgress(0, 100, 'Starting bulk crop of main images...');
+        updateLiveProgress(0, 100, 'Starting bulk crop...');
         $('#live-progress').show();
 
         let total = selectedImages.length;
         let completed = 0;
-        let results = [];
         let successCount = 0;
         let errorCount = 0;
 
         function processNext() {
             if (completed >= total) {
-                completeBulkCrop(results, successCount, errorCount);
+                completeBulkCrop(successCount, errorCount, total);
                 return;
             }
 
             let imageId = selectedImages[completed];
             let progress = completed + 1;
 
-            updateDetailedProgress(progress, total, 'Cropping main image ID: ' + imageId);
+            updateDetailedProgress(progress, total, 'Cropping image ID: ' + imageId);
             updateLiveProgress(progress, total, 'Processing ' + progress + '/' + total);
-            logProgress('🔄 Processing main image ' + imageId + ' (' + progress + '/' + total + ')');
+            logProgress('Processing image ' + imageId + ' (' + progress + '/' + total + ')');
 
             $.ajax({
                 url: ajax_object.ajax_url,
@@ -792,25 +1085,19 @@ jQuery(document).ready(function ($) {
                     if (response.success) {
                         successCount++;
                         refreshImagePreview(imageId);
-                        logProgress('✅ Main image ' + imageId + ' cropped successfully');
-                        results.push({ ...response.data, success: true });
-
-                        // Add to cropped images display
+                        logProgress('Image ' + imageId + ' cropped successfully');
                         addCroppedImageToResults(response.data);
                     } else {
                         errorCount++;
-                        logProgress('❌ Main image ' + imageId + ' failed: ' + (response.data?.message || 'Unknown error'), true);
-                        results.push({ ...response.data, success: false });
+                        logProgress('Image ' + imageId + ' failed: ' + (response.data?.message || 'Unknown error'), true);
                     }
                 },
                 error: function (xhr, status, error) {
                     errorCount++;
-                    logProgress('❌ Main image ' + imageId + ' error: ' + error, true);
-                    results.push({ success: false, image_id: imageId, message: 'AJAX error: ' + error });
+                    logProgress('Image ' + imageId + ' error: ' + error, true);
                 },
                 complete: function () {
                     completed++;
-                    // Delay between requests to prevent server overload
                     setTimeout(processNext, 500);
                 }
             });
@@ -822,25 +1109,19 @@ jQuery(document).ready(function ($) {
     function startBulkCropWithPadding(padding) {
         isProcessing = true;
         $('#detailed-progress-section').show();
-        $('#crop-with-padding').prop('disabled', true).text('🔄 Cropping with ' + padding + 'px...');
-
-        // Scroll to progress section smoothly
-        $('html, body').animate({
-            scrollTop: $('#detailed-progress-section').offset().top - 100
-        }, 800);
+        $('#crop-with-padding').prop('disabled', true).text('Cropping with ' + padding + 'px...');
 
         updateLiveProgress(0, 100, 'Starting bulk crop with ' + padding + 'px padding...');
         $('#live-progress').show();
 
         let total = selectedImages.length;
         let completed = 0;
-        let results = [];
         let successCount = 0;
         let errorCount = 0;
 
         function processNext() {
             if (completed >= total) {
-                completeBulkCropWithPadding(results, successCount, errorCount, padding);
+                completeBulkCropWithPadding(successCount, errorCount, total, padding);
                 return;
             }
 
@@ -849,7 +1130,7 @@ jQuery(document).ready(function ($) {
 
             updateDetailedProgress(progress, total, 'Cropping image ID: ' + imageId + ' (padding: ' + padding + 'px)');
             updateLiveProgress(progress, total, 'Processing ' + progress + '/' + total);
-            logProgress('🔄 Processing image ' + imageId + ' with ' + padding + 'px padding (' + progress + '/' + total + ')');
+            logProgress('Processing image ' + imageId + ' with ' + padding + 'px padding (' + progress + '/' + total + ')');
 
             $.ajax({
                 url: ajax_object.ajax_url,
@@ -865,25 +1146,19 @@ jQuery(document).ready(function ($) {
                     if (response.success) {
                         successCount++;
                         refreshImagePreview(imageId);
-                        logProgress('✅ Image ' + imageId + ' cropped successfully with ' + padding + 'px padding');
-                        results.push({ ...response.data, success: true });
-
-                        // Add to cropped images display
+                        logProgress('Image ' + imageId + ' cropped successfully with ' + padding + 'px padding');
                         addCroppedImageToResults(response.data);
                     } else {
                         errorCount++;
-                        logProgress('❌ Image ' + imageId + ' failed: ' + (response.data?.message || 'Unknown error'), true);
-                        results.push({ ...response.data, success: false });
+                        logProgress('Image ' + imageId + ' failed: ' + (response.data?.message || 'Unknown error'), true);
                     }
                 },
                 error: function (xhr, status, error) {
                     errorCount++;
-                    logProgress('❌ Image ' + imageId + ' error: ' + error, true);
-                    results.push({ success: false, image_id: imageId, message: 'AJAX error: ' + error });
+                    logProgress('Image ' + imageId + ' error: ' + error, true);
                 },
                 complete: function () {
                     completed++;
-                    // Delay between requests to prevent server overload
                     setTimeout(processNext, 500);
                 }
             });
@@ -892,75 +1167,65 @@ jQuery(document).ready(function ($) {
         processNext();
     }
 
-    function completeBulkCrop(results, successCount, errorCount) {
+    function completeBulkCrop(successCount, errorCount, total) {
         isProcessing = false;
         $('#crop-selected').prop('disabled', false).text('🚀 Brzi Crop (5px)');
 
-        let total = results.length;
-        updateDetailedProgress(total, total, 'Completed! 🎉');
-        updateLiveProgress(100, 100, 'Bulk crop of main images completed');
+        updateDetailedProgress(total, total, 'Completed!');
+        updateLiveProgress(100, 100, 'Bulk crop completed');
 
-        logProgress('<strong>🏁 BULK CROP COMPLETED</strong>');
-        logProgress('<strong>📊 SUMMARY: ' + successCount + ' successful, ' + errorCount + ' failed out of ' + total + ' main images</strong>');
+        logProgress('BULK CROP COMPLETED');
+        logProgress('SUMMARY: ' + successCount + ' successful, ' + errorCount + ' failed out of ' + total + ' images');
 
-        showQuickResult('🎉 Bulk crop completed: ' + successCount + '/' + total + ' main images successful');
+        showQuickResult('Bulk crop completed: ' + successCount + '/' + total + ' images successful');
 
-        // Clear image selection after successful bulk crop
         if (successCount > 0) {
             selectedImages = [];
             $('.image-checkbox').prop('checked', false);
             updateSelectedImagesDisplay();
-            updatePaddingControls();
         }
 
-        // Auto-hide progress after delay
         setTimeout(function () {
             $('#live-progress').fadeOut();
         }, 5000);
 
-        // Show completion notification
         if (successCount === total) {
-            showNotification('🎉 All ' + total + ' main images cropped successfully!', 'success');
+            showNotification('All ' + total + ' images cropped successfully!', 'success');
         } else if (successCount > 0) {
-            showNotification('✅ ' + successCount + ' of ' + total + ' main images cropped successfully', 'success');
+            showNotification(successCount + ' of ' + total + ' images cropped successfully', 'success');
         } else {
-            showNotification('❌ All crops failed. Check the detailed log for errors.', 'error');
+            showNotification('All crops failed. Check the detailed log for errors.', 'error');
         }
     }
 
-    function completeBulkCropWithPadding(results, successCount, errorCount, padding) {
+    function completeBulkCropWithPadding(successCount, errorCount, total, padding) {
         isProcessing = false;
         $('#crop-with-padding').prop('disabled', false).text('🎯 Crop sa Padding');
 
-        let total = results.length;
-        updateDetailedProgress(total, total, 'Completed! 🎉');
+        updateDetailedProgress(total, total, 'Completed!');
         updateLiveProgress(100, 100, 'Bulk crop with ' + padding + 'px padding completed');
 
-        logProgress('<strong>🏁 BULK CROP WITH PADDING COMPLETED</strong>');
-        logProgress('<strong>📊 SUMMARY: ' + successCount + ' successful, ' + errorCount + ' failed out of ' + total + ' images (padding: ' + padding + 'px)</strong>');
+        logProgress('BULK CROP WITH PADDING COMPLETED');
+        logProgress('SUMMARY: ' + successCount + ' successful, ' + errorCount + ' failed out of ' + total + ' images (padding: ' + padding + 'px)');
 
-        showQuickResult('🎉 Bulk crop completed: ' + successCount + '/' + total + ' images successful (' + padding + 'px padding)');
+        showQuickResult('Bulk crop completed: ' + successCount + '/' + total + ' images successful (' + padding + 'px padding)');
 
-        // Clear image selection after successful bulk crop
         if (successCount > 0) {
             selectedImages = [];
             $('.image-checkbox').prop('checked', false);
             updateSelectedImagesDisplay();
-            updatePaddingControls();
         }
 
-        // Auto-hide progress after delay
         setTimeout(function () {
             $('#live-progress').fadeOut();
         }, 5000);
 
-        // Show completion notification
         if (successCount === total) {
-            showNotification('🎉 All ' + total + ' images cropped successfully with ' + padding + 'px padding!', 'success');
+            showNotification('All ' + total + ' images cropped successfully with ' + padding + 'px padding!', 'success');
         } else if (successCount > 0) {
-            showNotification('✅ ' + successCount + ' of ' + total + ' images cropped successfully', 'success');
+            showNotification(successCount + ' of ' + total + ' images cropped successfully', 'success');
         } else {
-            showNotification('❌ All crops failed. Check the detailed log for errors.', 'error');
+            showNotification('All crops failed. Check the detailed log for errors.', 'error');
         }
     }
 
@@ -982,34 +1247,31 @@ jQuery(document).ready(function ($) {
             },
             success: function (response) {
                 if (response.success) {
-                    button.text('✓ Restored').addClass('cropped');
+                    button.text('Restored').addClass('cropped');
                     updateLiveProgress(100, 100, 'Image restored successfully');
-                    showQuickResult('✅ Image ' + imageId + ' restored from backup');
+                    showQuickResult('Image ' + imageId + ' restored from backup');
                     refreshImagePreview(imageId);
-
-                    // Update backup status
-                    loadBackupStatus([imageId]);
 
                     setTimeout(function () {
                         $('#live-progress').fadeOut();
                     }, 2000);
                 } else {
-                    button.text('❌ Failed').addClass('failed');
+                    button.text('Failed').addClass('failed');
                     updateLiveProgress(100, 100, 'Restore failed');
-                    showQuickResult('❌ Image ' + imageId + ' restore failed: ' + (response.data?.message || 'Unknown error'), true);
+                    showQuickResult('Image ' + imageId + ' restore failed: ' + (response.data?.message || 'Unknown error'), true);
                 }
             },
             error: function (xhr, status, error) {
-                button.text('❌ Error').addClass('failed');
+                button.text('Error').addClass('failed');
                 updateLiveProgress(100, 100, 'Error occurred');
-                showQuickResult('❌ Image ' + imageId + ' restore error: ' + error, true);
+                showQuickResult('Image ' + imageId + ' restore error: ' + error, true);
             },
             complete: function () {
                 isProcessing = false;
                 setTimeout(function () {
                     button.prop('disabled', false);
                     if (!button.hasClass('cropped') && !button.hasClass('failed')) {
-                        button.text('🔄 Restore');
+                        button.text('Restore');
                     }
                 }, 3000);
             }
@@ -1017,23 +1279,20 @@ jQuery(document).ready(function ($) {
     }
 
     function addCroppedImageToResults(data) {
-        // Show cropped images section
+        // Ova funkcija se koristi samo za quick crop i bulk crop
         $('#cropped-images-section').show();
-
-        // Add to cropped images array
         croppedImages.push(data);
 
-        // Get image info
         let imageItem = $('.image-item[data-image-id="' + data.image_id + '"]');
-        let imageTitle = imageItem.find('.image-title').text() || 'Main Image ' + data.image_id;
+        let imageTitle = imageItem.find('.image-title').text() || 'Image ' + data.image_id;
         let productName = imageItem.closest('.product-images-group').find('.product-group-title').text() || 'Unknown Product';
 
-        let html = '<div class="cropped-image-item" data-image-id="' + data.image_id + '">';
+        let html = '<div class="cropped-image-item saved-crop" data-image-id="' + data.image_id + '">';
         html += '<div class="cropped-image-preview">';
         html += '<img src="' + (data.cropped_url || '') + '" alt="Cropped ' + imageTitle + '" loading="lazy">';
         html += '</div>';
         html += '<div class="cropped-image-info">';
-        html += '<h4 title="' + imageTitle + '">' + imageTitle + '</h4>';
+        html += '<h4 title="' + imageTitle + '">✅ ' + imageTitle + ' (SAVED)</h4>';
         html += '<div class="cropped-image-meta">Product: ' + productName + '</div>';
         html += '<div class="cropped-image-meta">ID: ' + data.image_id + '</div>';
         if (data.new_size) {
@@ -1044,7 +1303,7 @@ jQuery(document).ready(function ($) {
         }
         html += '<div class="cropped-image-actions">';
         html += '<a href="' + (data.cropped_url || '') + '" target="_blank" class="button button-small">View Full</a>';
-        html += '<button class="button button-small" onclick="navigator.clipboard.writeText(\'' + (data.cropped_url || '') + '\')">Copy URL</button>';
+        html += '<span style="color: #00a32a; font-weight: bold;">✓ Saved as Original</span>';
         html += '</div>';
         html += '</div>';
         html += '</div>';
@@ -1061,7 +1320,6 @@ jQuery(document).ready(function ($) {
             let newSrc = currentSrc.split('?')[0] + '?v=' + Date.now();
             img.attr('src', newSrc);
 
-            // Also refresh the "View" link
             let viewLink = imageItem.find('a[target="_blank"]');
             if (viewLink.length) {
                 let currentHref = viewLink.attr('href');
@@ -1072,60 +1330,7 @@ jQuery(document).ready(function ($) {
             }
         }
     }
-    // Dodaj search event handlers u setupEventHandlers():
-    $('#search-products').on('input', function () {
-        let searchTerm = $(this).val().trim();
 
-        // Prikaži/sakrij clear button
-        $('#clear-search').toggle(searchTerm.length > 0);
-
-        // Dodaj search-active klasu
-        if (searchTerm.length > 0) {
-            $(this).closest('.category-controls').addClass('search-active');
-        } else {
-            $(this).closest('.category-controls').removeClass('search-active');
-        }
-
-        if (searchTerm.length >= 2 || searchTerm.length === 0) {
-            currentSearchTerm = searchTerm;
-            currentPage = 1;
-
-            // Prikaži loading indikator
-            if (searchTerm.length > 0) {
-                $('#search-products').css('background', 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'20\' height=\'20\' viewBox=\'0 0 20 20\'%3E%3Cpath fill=\'%23999\' d=\'M10 3.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM2 10a8 8 0 1116 0 8 8 0 01-16 0z\' opacity=\'.4\'/%3E%3Cpath fill=\'%23999\' d=\'M10 3.5a6.5 6.5 0 011.5.18V2.27A8.02 8.02 0 0010 2a8 8 0 00-1.5.27v1.41A6.48 6.48 0 0110 3.5z\'%3E%3CanimateTransform attributeName=\'transform\' type=\'rotate\' from=\'0 10 10\' to=\'360 10 10\' dur=\'1s\' repeatCount=\'indefinite\'/%3E%3C/path%3E%3C/svg%3E") no-repeat right 10px center');
-                $('#search-products').css('background-size', '16px 16px');
-            }
-
-            clearTimeout(window.searchTimeout);
-            window.searchTimeout = setTimeout(function () {
-                if (!isProcessing) {
-                    loadCategoryProducts();
-                }
-            }, 500);
-        }
-    });
-
-    $('#clear-search').on('click', function () {
-        $('#search-products').val('').focus();
-        $('#search-products').css('background', 'none');
-        $('.category-controls').removeClass('search-active');
-        currentSearchTerm = '';
-        currentPage = 1;
-        if (!isProcessing) {
-            loadCategoryProducts();
-        }
-        $(this).hide();
-    });
-    // Prikaži/sakrij clear button
-    $('#search-products').on('keypress', function (e) {
-        if (e.which === 13) { // Enter key
-            e.preventDefault();
-            clearTimeout(window.searchTimeout);
-            if (!isProcessing && currentSearchTerm.length >= 2) {
-                loadCategoryProducts();
-            }
-        }
-    });
     function showQuickResult(message, isError = false) {
         $('#quick-results').show();
         let currentContent = $('#quick-results-content').html();
@@ -1137,7 +1342,6 @@ jQuery(document).ready(function ($) {
             currentContent
         );
 
-        // Keep only last 5 results
         let lines = $('#quick-results-content').html().split('<br>');
         if (lines.length > 5) {
             $('#quick-results-content').html(lines.slice(0, 5).join('<br>'));
@@ -1145,7 +1349,6 @@ jQuery(document).ready(function ($) {
     }
 
     function showNotification(message, type) {
-        // Remove existing notifications
         $('.notification').remove();
 
         let notification = $('<div class="notification ' + type + '">' + message + '</div>');
