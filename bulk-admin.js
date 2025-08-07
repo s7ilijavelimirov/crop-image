@@ -1,4 +1,5 @@
 jQuery(document).ready(function ($) {
+    // GLOBALNE VARIJABLE
     let selectedImages = [];
     let selectedProducts = [];
     let currentCategory = '';
@@ -8,12 +9,94 @@ jQuery(document).ready(function ($) {
     let isProcessing = false;
     let currentSearchTerm = '';
 
+    // FAILSAFE SISTEM - sprečava beskonačne petlje
+    let maxRetries = 3;
+    let currentRetryCount = 0;
+    let lastProcessTime = 0;
+    let processingTimeouts = [];
+
     init();
 
     function init() {
         loadCategories();
         setupEventHandlers();
         setupHeartbeat();
+        setupFailsafeSystem();
+    }
+
+    // FAILSAFE SISTEM
+    function setupFailsafeSystem() {
+        // Automatski reset processing nakon 5 minuta
+        setInterval(function () {
+            if (isProcessing && (Date.now() - lastProcessTime) > 300000) { // 5 minuta
+                console.warn('FAILSAFE: Forced reset after 5 minutes');
+                forceResetProcessing();
+                showNotification('System auto-reset after timeout', 'warning');
+            }
+        }, 30000); // Proverava svakih 30 sekundi
+
+        // Globalni error handler
+        window.addEventListener('error', function (e) {
+            if (e.message && e.message.includes('bulk-cropper')) {
+                console.error('FAILSAFE: JavaScript error detected', e);
+                forceResetProcessing();
+            }
+        });
+
+        // Unload handler - očisti sve timeout-ove
+        window.addEventListener('beforeunload', function () {
+            clearAllTimeouts();
+            forceResetProcessing();
+        });
+    }
+
+    function forceResetProcessing() {
+        isProcessing = false;
+        clearAllTimeouts();
+
+        // Reset UI
+        $('.button').prop('disabled', false);
+        $('#crop-selected').text('Crop Selected (40px)');
+        $('#live-progress').hide();
+        $('#detailed-progress-section').hide();
+
+        // Reset text na dugmićima
+        $('.crop-individual').each(function () {
+            let padding = parseInt($(this).closest('.image-item').find('.padding-input').val()) || 40;
+            $(this).text('Crop (' + padding + 'px)').removeClass('failed cropping');
+        });
+
+        currentRetryCount = 0;
+        console.log('FAILSAFE: Processing force reset completed');
+    }
+
+    function clearAllTimeouts() {
+        processingTimeouts.forEach(function (timeout) {
+            clearTimeout(timeout);
+        });
+        processingTimeouts = [];
+
+        if (window.searchTimeout) {
+            clearTimeout(window.searchTimeout);
+        }
+    }
+
+    function safeSetTimeout(callback, delay) {
+        let timeout = setTimeout(function () {
+            try {
+                callback();
+            } catch (error) {
+                console.error('FAILSAFE: Callback error', error);
+                forceResetProcessing();
+            }
+        }, delay);
+
+        processingTimeouts.push(timeout);
+        return timeout;
+    }
+
+    function updateProcessingTime() {
+        lastProcessTime = Date.now();
     }
 
     function setupHeartbeat() {
@@ -35,18 +118,24 @@ jQuery(document).ready(function ($) {
     function setupEventHandlers() {
         // Category selection
         $('#category-select').on('change', function () {
+            if (isProcessing) {
+                showNotification('Please wait for current operation to complete', 'warning');
+                return;
+            }
             currentCategory = $(this).val();
             $('#load-category-products').prop('disabled', !currentCategory);
             updateCategoryInfo();
         });
 
         $('#load-category-products').on('click', function () {
+            if (isProcessing) return;
             currentPage = 1;
             loadCategoryProducts();
         });
 
         $('#reset-plugin').on('click', function () {
             if (confirm('Reset all data and start fresh?')) {
+                forceResetProcessing(); // Koristimo failsafe reset
                 resetPluginState();
             }
         });
@@ -74,8 +163,10 @@ jQuery(document).ready(function ($) {
             }
         });
 
-        // Search functionality
+        // Search sa debounce
         $('#search-products').on('input', function () {
+            if (isProcessing) return;
+
             let searchTerm = $(this).val().trim();
             $('#clear-search').toggle(searchTerm.length > 0);
 
@@ -99,22 +190,33 @@ jQuery(document).ready(function ($) {
         });
 
         $('#clear-search').on('click', function () {
+            if (isProcessing) return;
+
             $('#search-products').val('').focus();
             $('.category-controls').removeClass('search-active');
             currentSearchTerm = '';
             currentPage = 1;
-            if (!isProcessing) {
-                loadCategoryProducts();
-            }
+            loadCategoryProducts();
             $(this).hide();
         });
 
-        // Product selection
+        // Product selection sa ograničenjem
         $(document).on('change', '.product-checkbox', function () {
+            if (isProcessing) {
+                $(this).prop('checked', false);
+                showNotification('Please wait for current operation to complete', 'warning');
+                return;
+            }
+
             let productId = parseInt($(this).val());
             let productCard = $(this).closest('.product-card');
 
             if ($(this).is(':checked')) {
+                if (selectedProducts.length >= 3) {
+                    $(this).prop('checked', false);
+                    showNotification('Možete selektovati maksimalno 3 proizvoda odjednom za optimalne performanse', 'error');
+                    return;
+                }
                 if (selectedProducts.indexOf(productId) === -1) {
                     selectedProducts.push(productId);
                     productCard.addClass('selected');
@@ -127,6 +229,10 @@ jQuery(document).ready(function ($) {
         });
 
         $('#load-all-selected-images').on('click', function () {
+            if (isProcessing) {
+                showNotification('Please wait for current operation to complete', 'warning');
+                return;
+            }
             if (selectedProducts.length === 0) {
                 showNotification('Please select products first', 'error');
                 return;
@@ -135,11 +241,21 @@ jQuery(document).ready(function ($) {
         });
 
         $('#clear-selection').on('click', function () {
+            if (isProcessing) {
+                showNotification('Please wait for current operation to complete', 'warning');
+                return;
+            }
             clearAllSelections();
         });
 
         // Image selection
         $(document).on('change', '.image-checkbox', function () {
+            if (isProcessing) {
+                $(this).prop('checked', false);
+                showNotification('Please wait for current operation to complete', 'warning');
+                return;
+            }
+
             let imageId = parseInt($(this).val());
 
             if ($(this).is(':checked')) {
@@ -153,24 +269,26 @@ jQuery(document).ready(function ($) {
         });
 
         $('#select-all-images').on('click', function () {
+            if (isProcessing) return;
             $('.image-checkbox').prop('checked', true).trigger('change');
         });
 
         $('#deselect-all-images').on('click', function () {
+            if (isProcessing) return;
             $('.image-checkbox').prop('checked', false).trigger('change');
         });
 
-        // Individual padding update - updates only individual button text
+        // Individual padding update
         $(document).on('input', '.padding-input', function () {
             let imageId = $(this).closest('.image-item').data('image-id');
-            let padding = parseInt($(this).val()) || 5;
-            
+            let padding = parseInt($(this).val()) || 40;
+
             // Update individual crop button text
             let cropBtn = $('.image-item[data-image-id="' + imageId + '"] .crop-individual');
             cropBtn.text('Crop (' + padding + 'px)');
         });
 
-        // Individual crop button
+        // Individual crop button sa failsafe
         $(document).on('click', '.crop-individual', function () {
             if (isProcessing) {
                 showNotification('Please wait for current operation to complete', 'warning');
@@ -179,12 +297,12 @@ jQuery(document).ready(function ($) {
 
             let imageId = $(this).data('image-id');
             let paddingInput = $(this).closest('.image-item').find('.padding-input');
-            let padding = parseInt(paddingInput.val()) || 5;
+            let padding = parseInt(paddingInput.val()) || 40;
 
             cropImageToResults(imageId, padding, $(this));
         });
 
-        // Bulk crop with fixed 5px padding (recommended)
+        // Bulk crop sa failsafe
         $('#crop-selected').on('click', function () {
             if (isProcessing) {
                 showNotification('Please wait for current operation to complete', 'warning');
@@ -196,14 +314,19 @@ jQuery(document).ready(function ($) {
                 return;
             }
 
-            if (!confirm('Crop ' + selectedImages.length + ' selected images with 5px padding (recommended)?')) {
+            if (selectedImages.length > 20) {
+                showNotification('Molim vas selektujte maksimalno 20 slika za stabilnost sistema', 'error');
                 return;
             }
 
-            startBulkCropToResults(5); // Always use 5px for bulk
+            if (!confirm('Crop ' + selectedImages.length + ' selected images with 40px padding (recommended)?')) {
+                return;
+            }
+
+            startBulkCropToResults(40);
         });
 
-        // Save crop result as original
+        // Save/Discard results
         $(document).on('click', '.save-crop-result', function () {
             if (isProcessing) {
                 showNotification('Please wait for current operation to complete', 'warning');
@@ -219,10 +342,34 @@ jQuery(document).ready(function ($) {
             saveCropResultAsOriginal(imageId, $(this));
         });
 
-        // Discard crop result
         $(document).on('click', '.discard-crop-result', function () {
+            if (isProcessing) {
+                showNotification('Please wait for current operation to complete', 'warning');
+                return;
+            }
+
             let imageId = $(this).data('image-id');
             discardCropResult(imageId);
+        });
+
+        // Bulk save all
+        $(document).on('click', '#bulk-save-all-crops', function () {
+            if (isProcessing) {
+                showNotification('Please wait for current operation to complete', 'warning');
+                return;
+            }
+
+            let croppedItems = $('.crop-result-item');
+            if (croppedItems.length === 0) {
+                showNotification('No cropped images to save', 'error');
+                return;
+            }
+
+            if (!confirm('Save ALL ' + croppedItems.length + ' cropped images as originals? This will replace current images permanently.')) {
+                return;
+            }
+
+            bulkSaveAllCrops();
         });
 
         $('#toggle-detailed-log').on('click', function () {
@@ -230,59 +377,93 @@ jQuery(document).ready(function ($) {
         });
     }
 
-    function updateBulkCropButtonText() {
-        // Keep bulk button always 5px (recommended)
-        $('#crop-selected').text('Crop Selected (5px)');
-    }
-
+    // CROP INDIVIDUAL SA FAILSAFE
     function cropImageToResults(imageId, padding, button) {
+        if (isProcessing) return;
+
         isProcessing = true;
+        updateProcessingTime();
+        currentRetryCount = 0;
+
         button.prop('disabled', true).text('Cropping...');
 
         updateLiveProgress(0, 100, 'Creating cropped version...');
         $('#live-progress').show();
 
+        // FAILSAFE TIMEOUT - forsiraj prekid nakon 2 minuta
+        let failsafeTimeout = safeSetTimeout(function () {
+            if (isProcessing) {
+                console.warn('FAILSAFE: Individual crop timeout for image ' + imageId);
+                button.text('Timeout').addClass('failed');
+                forceResetProcessing();
+                showNotification('Crop timeout - operation cancelled for safety', 'error');
+            }
+        }, 120000); // 2 minuta
+
         $.ajax({
             url: ajax_object.ajax_url,
             type: 'POST',
-            timeout: 60000,
+            timeout: 90000, // 90 sekundi
             data: {
-                action: 'preview_crop', // Use preview_crop to not touch original
+                action: 'preview_crop',
                 image_id: imageId,
                 padding: padding,
                 nonce: ajax_object.nonce
             },
             success: function (response) {
+                clearTimeout(failsafeTimeout);
+
                 if (response.success) {
                     let data = response.data;
-                    
-                    // Add to results section
+
                     addCropResultToResults(imageId, data, padding);
 
                     button.text('Crop (' + padding + 'px)').removeClass('cropping');
                     updateLiveProgress(100, 100, 'Cropped version created');
                     showQuickResult('Cropped version created for image ' + imageId + ' (' + padding + 'px padding)');
 
-                    setTimeout(function () {
+                    safeSetTimeout(function () {
                         $('#live-progress').fadeOut();
                     }, 2000);
                 } else {
                     button.text('Crop Failed').addClass('failed');
                     updateLiveProgress(100, 100, 'Crop failed');
-                    showQuickResult('Crop failed for image ' + imageId + ': ' + (response.data?.message || 'Unknown error'), true);
+
+                    let errorMsg = response.data?.message || 'Unknown error';
+                    if (errorMsg.includes('timeout') || errorMsg.includes('Timeout')) {
+                        errorMsg = 'Server timeout - try smaller image';
+                    } else if (errorMsg.includes('memory') || errorMsg.includes('Memory')) {
+                        errorMsg = 'Memory limit exceeded';
+                    }
+
+                    showQuickResult('Crop failed for image ' + imageId + ': ' + errorMsg, true);
                 }
             },
             error: function (xhr, status, error) {
+                clearTimeout(failsafeTimeout);
+
                 button.text('Error').addClass('failed');
                 updateLiveProgress(100, 100, 'Error occurred');
-                showQuickResult('Crop error for image ' + imageId + ': ' + error, true);
+
+                let errorMsg = error;
+                if (status === 'timeout') {
+                    errorMsg = 'Request timeout - server overloaded';
+                } else if (xhr.status === 500) {
+                    errorMsg = 'Server error - check logs';
+                } else if (xhr.status === 0) {
+                    errorMsg = 'Network error - check connection';
+                }
+
+                showQuickResult('Crop error for image ' + imageId + ': ' + errorMsg, true);
             },
             complete: function () {
+                clearTimeout(failsafeTimeout);
                 isProcessing = false;
-                setTimeout(function () {
+
+                safeSetTimeout(function () {
                     button.prop('disabled', false);
                     if (!button.hasClass('failed')) {
-                        let currentPadding = parseInt(button.closest('.image-item').find('.padding-input').val()) || 5;
+                        let currentPadding = parseInt(button.closest('.image-item').find('.padding-input').val()) || 40;
                         button.text('Crop (' + currentPadding + 'px)');
                     }
                 }, 3000);
@@ -290,8 +471,14 @@ jQuery(document).ready(function ($) {
         });
     }
 
+    // BULK CROP SA NAPREDNIM FAILSAFE
     function startBulkCropToResults(padding) {
+        if (isProcessing) return;
+
         isProcessing = true;
+        updateProcessingTime();
+        currentRetryCount = 0;
+
         $('#detailed-progress-section').show();
         $('#crop-selected').prop('disabled', true).text('Cropping...');
 
@@ -302,9 +489,31 @@ jQuery(document).ready(function ($) {
         let completed = 0;
         let successCount = 0;
         let errorCount = 0;
+        let maxErrors = Math.ceil(total * 0.5); // Prekini ako je preko 50% grešaka
+
+        // MASTER FAILSAFE - prekini bulk nakon 10 minuta
+        let masterFailsafe = safeSetTimeout(function () {
+            if (isProcessing) {
+                console.error('FAILSAFE: Bulk crop master timeout after 10 minutes');
+                forceResetProcessing();
+                showNotification('Bulk crop cancelled after 10 minutes for system safety', 'error');
+                completeBulkCropToResults(successCount, errorCount, total, padding, true);
+            }
+        }, 600000); // 10 minuta
 
         function processNext() {
+            updateProcessingTime(); // Update heartbeat
+
+            // FAILSAFE: Prekini ako previše grešaka
+            if (errorCount >= maxErrors) {
+                clearTimeout(masterFailsafe);
+                console.warn('FAILSAFE: Too many errors, stopping bulk crop');
+                completeBulkCropToResults(successCount, errorCount, completed, padding, true);
+                return;
+            }
+
             if (completed >= total) {
+                clearTimeout(masterFailsafe);
                 completeBulkCropToResults(successCount, errorCount, total, padding);
                 return;
             }
@@ -316,10 +525,19 @@ jQuery(document).ready(function ($) {
             updateLiveProgress(progress, total, 'Processing ' + progress + '/' + total);
             logProgress('Processing image ' + imageId + ' (' + progress + '/' + total + ')');
 
+            // INDIVIDUAL FAILSAFE za svaki request
+            let requestFailsafe = safeSetTimeout(function () {
+                console.warn('FAILSAFE: Individual request timeout for image ' + imageId);
+                errorCount++;
+                completed++;
+                logProgress('Image ' + imageId + ' timeout (failsafe)', true);
+                safeSetTimeout(processNext, 1000);
+            }, 90000); // 90 sekundi po slici
+
             $.ajax({
                 url: ajax_object.ajax_url,
                 type: 'POST',
-                timeout: 60000,
+                timeout: 75000, // 75 sekundi
                 data: {
                     action: 'preview_crop',
                     image_id: imageId,
@@ -327,10 +545,143 @@ jQuery(document).ready(function ($) {
                     nonce: ajax_object.nonce
                 },
                 success: function (response) {
+                    clearTimeout(requestFailsafe);
+
                     if (response.success) {
                         successCount++;
                         addCropResultToResults(imageId, response.data, padding);
                         logProgress('Image ' + imageId + ' cropped successfully');
+                    } else {
+                        errorCount++;
+                        logProgress('Image ' + imageId + ' failed: ' + (response.data?.message || 'Unknown error'), true);
+                    }
+                },
+                error: function (xhr, status, error) {
+                    clearTimeout(requestFailsafe);
+                    errorCount++;
+                    logProgress('Image ' + imageId + ' error: ' + error, true);
+                },
+                complete: function () {
+                    completed++;
+                    // Dodeli pauzu između zahteva za stabilnost
+                    safeSetTimeout(processNext, 800);
+                }
+            });
+        }
+
+        processNext();
+    }
+
+    function completeBulkCropToResults(successCount, errorCount, total, padding, wasCancelled = false) {
+        isProcessing = false;
+        clearAllTimeouts();
+
+        $('#crop-selected').prop('disabled', false).text('Crop Selected (40px)');
+
+        updateDetailedProgress(total, total, wasCancelled ? 'Cancelled for safety!' : 'Completed!');
+        updateLiveProgress(100, 100, wasCancelled ? 'Bulk crop cancelled' : 'Bulk crop completed');
+
+        logProgress(wasCancelled ? 'BULK CROP CANCELLED (FAILSAFE)' : 'BULK CROP COMPLETED');
+        logProgress('SUMMARY: ' + successCount + ' successful, ' + errorCount + ' failed out of ' + total + ' images (padding: ' + padding + 'px)');
+
+        let message = 'Bulk crop ' + (wasCancelled ? 'cancelled' : 'completed') + ': ' + successCount + '/' + total + ' images successful (' + padding + 'px padding)';
+        showQuickResult(message);
+
+        safeSetTimeout(function () {
+            $('#live-progress').fadeOut();
+        }, 5000);
+
+        if (wasCancelled) {
+            showNotification('Bulk crop was cancelled for system stability. ' + successCount + ' images were processed successfully.', 'warning');
+        } else if (successCount === total) {
+            showNotification('All ' + total + ' images cropped successfully!', 'success');
+        } else if (successCount > 0) {
+            showNotification(successCount + ' of ' + total + ' images cropped successfully', 'success');
+        } else {
+            showNotification('All crops failed. Check the detailed log for errors.', 'error');
+        }
+    }
+
+    // BULK SAVE SA FAILSAFE
+    function bulkSaveAllCrops() {
+        if (isProcessing) return;
+
+        isProcessing = true;
+        updateProcessingTime();
+
+        $('#detailed-progress-section').show();
+        $('#bulk-save-all-crops').prop('disabled', true).text('Saving All...');
+
+        updateLiveProgress(0, 100, 'Starting bulk save...');
+        $('#live-progress').show();
+
+        let croppedItems = $('.crop-result-item');
+        let imageIds = [];
+
+        croppedItems.each(function () {
+            imageIds.push(parseInt($(this).data('image-id')));
+        });
+
+        let total = imageIds.length;
+        let completed = 0;
+        let successCount = 0;
+        let errorCount = 0;
+
+        // MASTER FAILSAFE za bulk save
+        let masterFailsafe = safeSetTimeout(function () {
+            if (isProcessing) {
+                console.error('FAILSAFE: Bulk save timeout');
+                forceResetProcessing();
+                showNotification('Bulk save cancelled for system safety', 'error');
+                completeBulkSave(successCount, errorCount, total, true);
+            }
+        }, 300000); // 5 minuta
+
+        function saveNext() {
+            updateProcessingTime();
+
+            if (completed >= total) {
+                clearTimeout(masterFailsafe);
+                completeBulkSave(successCount, errorCount, total);
+                return;
+            }
+
+            let imageId = imageIds[completed];
+            let progress = completed + 1;
+
+            updateDetailedProgress(progress, total, 'Saving image ID: ' + imageId);
+            updateLiveProgress(progress, total, 'Saving ' + progress + '/' + total);
+            logProgress('Saving image ' + imageId + ' (' + progress + '/' + total + ')');
+
+            $.ajax({
+                url: ajax_object.ajax_url,
+                type: 'POST',
+                timeout: 60000,
+                data: {
+                    action: 'commit_preview',
+                    image_id: imageId,
+                    nonce: ajax_object.nonce
+                },
+                success: function (response) {
+                    if (response.success) {
+                        successCount++;
+
+                        // Remove from results
+                        $('.crop-result-item[data-image-id="' + imageId + '"]').fadeOut(300, function () {
+                            $(this).remove();
+                        });
+
+                        // Remove from main images
+                        let imageItem = $('.image-item[data-image-id="' + imageId + '"]');
+                        imageItem.addClass('removing');
+
+                        safeSetTimeout(function () {
+                            imageItem.remove();
+                            selectedImages = selectedImages.filter(id => id !== imageId);
+                            updateSelectedImagesDisplay();
+                        }, 300);
+
+                        logProgress('Image ' + imageId + ' saved successfully');
                     } else {
                         errorCount++;
                         logProgress('Image ' + imageId + ' failed: ' + (response.data?.message || 'Unknown error'), true);
@@ -342,79 +693,104 @@ jQuery(document).ready(function ($) {
                 },
                 complete: function () {
                     completed++;
-                    setTimeout(processNext, 500);
+                    safeSetTimeout(saveNext, 500); // Pauza između save operacija
                 }
             });
         }
 
-        processNext();
+        saveNext();
     }
 
-    function completeBulkCropToResults(successCount, errorCount, total, padding) {
+    function completeBulkSave(successCount, errorCount, total, wasCancelled = false) {
         isProcessing = false;
-        $('#crop-selected').prop('disabled', false).text('Crop Selected (5px)');
+        clearAllTimeouts();
 
-        updateDetailedProgress(total, total, 'Completed!');
-        updateLiveProgress(100, 100, 'Bulk crop completed');
+        $('#bulk-save-all-crops').prop('disabled', false).text('💾 Save All Cropped Images');
 
-        logProgress('BULK CROP COMPLETED');
-        logProgress('SUMMARY: ' + successCount + ' successful, ' + errorCount + ' failed out of ' + total + ' images (padding: ' + padding + 'px)');
+        updateDetailedProgress(total, total, wasCancelled ? 'Save cancelled!' : 'Bulk save completed!');
+        updateLiveProgress(100, 100, wasCancelled ? 'Bulk save cancelled' : 'Bulk save completed');
 
-        showQuickResult('Bulk crop completed: ' + successCount + '/' + total + ' images successful (' + padding + 'px padding)');
+        logProgress(wasCancelled ? 'BULK SAVE CANCELLED (FAILSAFE)' : 'BULK SAVE COMPLETED');
+        logProgress('SUMMARY: ' + successCount + ' saved, ' + errorCount + ' failed out of ' + total + ' images');
 
-        setTimeout(function () {
+        let message = 'Bulk save ' + (wasCancelled ? 'cancelled' : 'completed') + ': ' + successCount + '/' + total + ' images saved successfully';
+        showQuickResult(message);
+
+        safeSetTimeout(function () {
             $('#live-progress').fadeOut();
         }, 5000);
 
-        if (successCount === total) {
-            showNotification('All ' + total + ' images cropped successfully!', 'success');
+        if (wasCancelled) {
+            showNotification('Bulk save was cancelled for system stability', 'warning');
+        } else if (successCount === total) {
+            showNotification('All ' + total + ' images saved successfully! 🎉', 'success');
+            // Sakrij results section ako je sve sačuvano
+            if ($('.crop-result-item').length === 0) {
+                $('#cropped-images-section').fadeOut();
+            }
         } else if (successCount > 0) {
-            showNotification(successCount + ' of ' + total + ' images cropped successfully', 'success');
+            showNotification(successCount + ' of ' + total + ' images saved successfully', 'success');
         } else {
-            showNotification('All crops failed. Check the detailed log for errors.', 'error');
+            showNotification('All saves failed. Check the detailed log for errors.', 'error');
         }
     }
 
     function saveCropResultAsOriginal(imageId, button) {
+        if (isProcessing) return;
+
         isProcessing = true;
+        updateProcessingTime();
+
         button.prop('disabled', true).text('Saving...');
 
         updateLiveProgress(0, 100, 'Saving as original image...');
         $('#live-progress').show();
 
+        // FAILSAFE za individual save
+        let saveFailsafe = safeSetTimeout(function () {
+            if (isProcessing) {
+                console.warn('FAILSAFE: Individual save timeout for image ' + imageId);
+                button.text('Timeout').addClass('failed');
+                forceResetProcessing();
+                showNotification('Save timeout - operation cancelled', 'error');
+            }
+        }, 60000); // 1 minut
+
         $.ajax({
             url: ajax_object.ajax_url,
             type: 'POST',
-            timeout: 60000,
+            timeout: 45000,
             data: {
                 action: 'commit_preview',
                 image_id: imageId,
                 nonce: ajax_object.nonce
             },
             success: function (response) {
+                clearTimeout(saveFailsafe);
+
                 if (response.success) {
                     // Remove from results section
-                    $('.crop-result-item[data-image-id="' + imageId + '"]').fadeOut(500, function() {
+                    $('.crop-result-item[data-image-id="' + imageId + '"]').fadeOut(500, function () {
                         $(this).remove();
                     });
-                    
+
                     // Remove from main images section with animation
                     let imageItem = $('.image-item[data-image-id="' + imageId + '"]');
                     imageItem.addClass('removing');
-                    
-                    setTimeout(function() {
+
+                    safeSetTimeout(function () {
                         imageItem.remove();
-                        
+
                         // Update selected arrays
                         selectedImages = selectedImages.filter(id => id !== imageId);
                         updateSelectedImagesDisplay();
-                        
+
                         // Check if image checkbox was checked and update
                         let checkbox = $('#img_' + imageId);
                         if (checkbox.is(':checked')) {
                             checkbox.prop('checked', false);
                         }
-                        
+
                         showNotification('Image ' + imageId + ' saved and removed from list ✅', 'success');
                     }, 500);
 
@@ -422,7 +798,7 @@ jQuery(document).ready(function ($) {
                     updateLiveProgress(100, 100, 'Image saved successfully');
                     showQuickResult('Image ' + imageId + ' saved as original and removed from workflow');
 
-                    setTimeout(function () {
+                    safeSetTimeout(function () {
                         $('#live-progress').fadeOut();
                     }, 2000);
                 } else {
@@ -432,13 +808,17 @@ jQuery(document).ready(function ($) {
                 }
             },
             error: function (xhr, status, error) {
+                clearTimeout(saveFailsafe);
+
                 button.text('Error').addClass('failed');
                 updateLiveProgress(100, 100, 'Error occurred');
                 showQuickResult('Save error for image ' + imageId + ': ' + error, true);
             },
             complete: function () {
+                clearTimeout(saveFailsafe);
                 isProcessing = false;
-                setTimeout(function () {
+
+                safeSetTimeout(function () {
                     button.prop('disabled', false);
                     if (!button.hasClass('success') && !button.hasClass('failed')) {
                         button.text('Save');
@@ -452,16 +832,20 @@ jQuery(document).ready(function ($) {
         $.ajax({
             url: ajax_object.ajax_url,
             type: 'POST',
+            timeout: 10000,
             data: {
                 action: 'discard_preview',
                 image_id: imageId,
                 nonce: ajax_object.nonce
             },
             success: function (response) {
-                $('.crop-result-item[data-image-id="' + imageId + '"]').fadeOut(500, function() {
+                $('.crop-result-item[data-image-id="' + imageId + '"]').fadeOut(500, function () {
                     $(this).remove();
                 });
                 showNotification('Cropped result discarded', 'success');
+            },
+            error: function () {
+                showNotification('Failed to discard result', 'error');
             }
         });
     }
@@ -497,11 +881,9 @@ jQuery(document).ready(function ($) {
         $('#cropped-images-grid').prepend(html);
     }
 
-    // Keep all other existing functions (resetPluginState, updateCategoryInfo, loadCategories, etc.)
-    // ... [Previous functions remain unchanged] ...
-
+    // OSTALE FUNKCIJE BEZ FAILSAFE IZMENA
     function resetPluginState() {
-        clearTimeout(window.searchTimeout);
+        clearAllTimeouts();
 
         selectedImages = [];
         selectedProducts = [];
@@ -588,6 +970,8 @@ jQuery(document).ready(function ($) {
         if (!currentCategory && !currentSearchTerm) return;
 
         isProcessing = true;
+        updateProcessingTime();
+
         updateLiveProgress(0, 100, 'Loading products...');
         $('#live-progress').show();
         $('#products-grid').html('<div class="loading">Loading products...</div>');
@@ -615,7 +999,7 @@ jQuery(document).ready(function ($) {
                     updatePagination(response.data.pagination);
                     updateLiveProgress(100, 100, 'Products loaded successfully');
 
-                    setTimeout(function () {
+                    safeSetTimeout(function () {
                         $('#live-progress').fadeOut();
                     }, 2000);
                 } else {
@@ -634,6 +1018,7 @@ jQuery(document).ready(function ($) {
         });
     }
 
+    // ISPRAVLJENA displayProducts funkcija
     function displayProducts(products) {
         if (products.length === 0) {
             let message = currentSearchTerm ?
@@ -681,6 +1066,29 @@ jQuery(document).ready(function ($) {
         $('#products-grid').html(html);
     }
 
+    // ISPRAVLJENA discardCropResult funkcija
+    function discardCropResult(imageId) {
+        $.ajax({
+            url: ajax_object.ajax_url,
+            type: 'POST',
+            timeout: 10000,
+            data: {
+                action: 'discard_preview',
+                image_id: imageId,
+                nonce: ajax_object.nonce
+            },
+            success: function (response) {
+                $('.crop-result-item[data-image-id="' + imageId + '"]').fadeOut(500, function () {
+                    $(this).remove();
+                });
+                showNotification('Cropped result discarded', 'success');
+            },
+            error: function () {
+                showNotification('Failed to discard result', 'error');
+            }
+        });
+    }
+
     function updatePagination(pagination) {
         totalPages = pagination.total_pages;
         currentPage = pagination.current_page;
@@ -701,8 +1109,8 @@ jQuery(document).ready(function ($) {
     function updateSelectedProductsDisplay() {
         let count = selectedProducts.length;
         $('#selected-products-count').text(count + ' products selected');
-        $('#load-all-selected-images').prop('disabled', count === 0);
-        $('#clear-selection').prop('disabled', count === 0);
+        $('#load-all-selected-images').prop('disabled', count === 0 || isProcessing);
+        $('#clear-selection').prop('disabled', count === 0 || isProcessing);
 
         if (count > 0) {
             $('.selected-summary').show();
@@ -753,6 +1161,8 @@ jQuery(document).ready(function ($) {
         if (selectedProducts.length === 0) return;
 
         isProcessing = true;
+        updateProcessingTime();
+
         updateLiveProgress(0, 100, 'Loading images...');
         $('#live-progress').show();
 
@@ -774,11 +1184,11 @@ jQuery(document).ready(function ($) {
                     displayImages(response.data.images, response.data);
                     updateLiveProgress(100, 100, 'Images loaded successfully');
 
-                    setTimeout(function () {
+                    safeSetTimeout(function () {
                         $('#live-progress').fadeOut();
                     }, 2000);
                 } else {
-                    $('#images-grid').html('<div class="error">Failed to load images</div>');
+                    $('#images-grid').html('<div class="error">Failed to load images: ' + (response.data || 'Unknown error') + '</div>');
                     showNotification('Failed to load images', 'error');
                 }
             },
@@ -838,11 +1248,11 @@ jQuery(document).ready(function ($) {
                 // Individual padding control
                 html += '<div class="individual-padding">';
                 html += '<label>Padding: </label>';
-                html += '<input type="number" class="padding-input" value="5" min="0" max="100" style="width:50px;"> px';
+                html += '<input type="number" class="padding-input" value="40" min="0" max="200" style="width:50px;"> px';
                 html += '</div>';
 
                 html += '<div class="image-actions">';
-                html += '<button class="button button-small crop-individual" data-image-id="' + image.id + '">Crop (5px)</button>';
+                html += '<button class="button button-small crop-individual" data-image-id="' + image.id + '">Crop (40px)</button>';
                 html += '<a href="' + image.full_url + '" target="_blank" class="button button-small">View Original</a>';
                 html += '</div>';
 
@@ -861,9 +1271,9 @@ jQuery(document).ready(function ($) {
         let count = selectedImages.length;
         $('#selected-count').text(count + ' selected');
         $('#crop-selected').prop('disabled', count === 0 || isProcessing);
-        
-        // Keep bulk crop button text fixed at 5px
-        $('#crop-selected').text('Crop Selected (5px)');
+
+        // Keep bulk crop button text fixed at 40px
+        $('#crop-selected').text('Crop Selected (40px)');
     }
 
     function updateLiveProgress(current, total, message) {
