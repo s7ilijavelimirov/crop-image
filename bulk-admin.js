@@ -1419,4 +1419,94 @@ jQuery(document).ready(function ($) {
             $(this).remove();
         });
     }
+    // Debug log handlers
+    $('#show-log').on('click', function () {
+        loadPluginLogs();
+    });
+
+    $('#refresh-log').on('click', function () {
+        if ($('#log-display').is(':visible')) {
+            loadPluginLogs();
+        }
+    });
+
+    $('#clear-log').on('click', function () {
+        if (confirm('Clear all debug logs? This cannot be undone.')) {
+            clearPluginLogs();
+        }
+    });
+    function loadPluginLogs() {
+        $('#log-display').show();
+        $('#log-content').text('Loading logs...');
+        $('#show-log').prop('disabled', true).text('Loading...');
+
+        $.ajax({
+            url: ajax_object.ajax_url,
+            type: 'POST',
+            timeout: 15000,
+            data: {
+                action: 'view_plugin_log',
+                nonce: ajax_object.nonce
+            },
+            success: function (response) {
+                if (response.success) {
+                    let logs = response.data.logs;
+                    let fileSize = response.data.file_size;
+
+                    // Highlight different log levels and keywords
+                    logs = logs.replace(/\[ERROR\]/g, '<span style="color: #ff4444; font-weight: bold;">[ERROR]</span>');
+                    logs = logs.replace(/\[INFO\]/g, '<span style="color: #44ff44;">[INFO]</span>');
+                    logs = logs.replace(/=== CROP START/g, '<span style="color: #ffff44; font-weight: bold;">=== CROP START</span>');
+                    logs = logs.replace(/SUCCESS: Preview created successfully/g, '<span style="color: #44ff44; font-weight: bold;">SUCCESS: Preview created successfully</span>');
+                    logs = logs.replace(/Python path:/g, '<span style="color: #44ddff;">Python path:</span>');
+                    logs = logs.replace(/Command:/g, '<span style="color: #ff8844;">Command:</span>');
+                    logs = logs.replace(/return code: 0/g, '<span style="color: #44ff44;">return code: 0</span>');
+                    logs = logs.replace(/return code: 127/g, '<span style="color: #ff4444;">return code: 127</span>');
+                    logs = logs.replace(/return code: 1/g, '<span style="color: #ff4444;">return code: 1</span>');
+
+                    $('#log-content').html(logs);
+                    $('#log-info').text(`File size: ${fileSize} | Last 100 lines`);
+
+                    // Auto-scroll to bottom
+                    $('#log-content').scrollTop($('#log-content')[0].scrollHeight);
+
+                    showNotification('Logs loaded successfully', 'success');
+                } else {
+                    $('#log-content').text('Error loading logs: ' + (response.data || 'Unknown error'));
+                    showNotification('Failed to load logs', 'error');
+                }
+            },
+            error: function (xhr, status, error) {
+                $('#log-content').text('AJAX Error loading logs: ' + error);
+                showNotification('Error loading logs: ' + error, 'error');
+            },
+            complete: function () {
+                $('#show-log').prop('disabled', false).text('📋 Show Recent Log');
+            }
+        });
+    }
+
+    function clearPluginLogs() {
+        $.ajax({
+            url: ajax_object.ajax_url,
+            type: 'POST',
+            timeout: 10000,
+            data: {
+                action: 'clear_plugin_logs',
+                nonce: ajax_object.nonce
+            },
+            success: function (response) {
+                if (response.success) {
+                    $('#log-content').text('Logs cleared successfully. New operations will appear here.');
+                    $('#log-info').text('Log file cleared');
+                    showNotification('Logs cleared successfully', 'success');
+                } else {
+                    showNotification('Failed to clear logs: ' + (response.data || 'Unknown error'), 'error');
+                }
+            },
+            error: function (xhr, status, error) {
+                showNotification('Error clearing logs: ' + error, 'error');
+            }
+        });
+    }
 });
