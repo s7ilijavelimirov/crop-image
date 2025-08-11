@@ -106,7 +106,7 @@ class BulkImageCropper
         }
 
         $this->log_file_path = $log_dir . '/debug.log';
-       // $this->write_log('=== PLUGIN STARTED ===');
+        // $this->write_log('=== PLUGIN STARTED ===');
     }
 
     private function write_log($message, $level = 'INFO')
@@ -729,10 +729,10 @@ class BulkImageCropper
 
         // PRODUCTION EMERGENCY LIMITS
         $original_time_limit = ini_get('max_execution_time');
-        set_time_limit(25); // ULTRA kratak za produkciju
+        set_time_limit(90);
 
         $start_wall_time = time();
-        $max_wall_time = 20; // Maksimalno 20 sekundi
+        $max_wall_time = 80;
 
         $image_path = get_attached_file($image_id);
         $this->write_log("Image path: {$image_path}");
@@ -825,8 +825,8 @@ class BulkImageCropper
                 intval($padding));
 
             // Force timeout na produkciji
-            $command = "timeout 15 " . $base_cmd . " 2>&1";
-            $timeout_limit = 18;
+            $command = $base_cmd . " 2>&1";
+            $timeout_limit = 65;
         }
 
         $this->write_log("Command: {$command}");
