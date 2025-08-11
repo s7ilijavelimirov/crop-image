@@ -49,19 +49,23 @@ class BulkImageCropper
         $this->processing_start_time = time();
         $this->current_operation = $operation_name;
 
-        // Set reasonable limits
-        set_time_limit(90); // 90 sekundi max po operaciji
+        // KRAĆI LIMIT ZA SHARED HOSTING
+        set_time_limit(75); // Smanjen sa 90 na 75 sekundi
         if (function_exists('wp_raise_memory_limit')) {
             wp_raise_memory_limit();
         }
 
-        error_log('CROP OPERATION START: ' . $operation_name);
+        // SAMO DEBUG LOG
+        if (defined('WP_DEBUG') && WP_DEBUG) {
+            error_log('CROP OPERATION START: ' . $operation_name);
+        }
     }
-
     private function check_operation_timeout()
     {
-        if ($this->processing_start_time && (time() - $this->processing_start_time) > 75) {
-            error_log('FAILSAFE: Operation timeout detected for ' . $this->current_operation);
+        if ($this->processing_start_time && (time() - $this->processing_start_time) > 60) { // Smanjen sa 75 na 60
+            if (defined('WP_DEBUG') && WP_DEBUG) {
+                error_log('FAILSAFE: Operation timeout detected for ' . $this->current_operation);
+            }
             return true;
         }
         return false;
@@ -72,7 +76,10 @@ class BulkImageCropper
         $duration = time() - $this->processing_start_time;
         $status = $success ? 'SUCCESS' : 'FAILED';
 
-        error_log('CROP OPERATION END: ' . $this->current_operation . ' - ' . $status . ' (' . $duration . 's)');
+        // SAMO DEBUG LOG
+        if (defined('WP_DEBUG') && WP_DEBUG) {
+            error_log('CROP OPERATION END: ' . $this->current_operation . ' - ' . $status . ' (' . $duration . 's)');
+        }
 
         $this->processing_start_time = null;
         $this->current_operation = null;
@@ -613,43 +620,80 @@ class BulkImageCropper
     // CORE CROP FUNCTION - SA PRODUCTION FAILSAFE
     private function create_preview_crop($image_id, $padding = 40)
     {
+        // BULLETPROOF FAILSAFE #1 - Postavi tvrd limit
+        $original_time_limit = ini_get('max_execution_time');
+        set_time_limit(60); // Maksimalno 60 sekundi za celu operaciju
+
+        // BULLETPROOF FAILSAFE #2 - Register shutdown function
+        $shutdown_registered = false;
+        register_shutdown_function(function () use (&$shutdown_registered) {
+            if (!$shutdown_registered) {
+                error_log('BULLETPROOF: PHP shutdown detected during crop operation');
+            }
+        });
+
         $image_path = get_attached_file($image_id);
 
         if (!$image_path || !file_exists($image_path)) {
+            set_time_limit($original_time_limit);
             return array(
                 'success' => false,
                 'message' => 'Image file not found'
             );
         }
 
-        // Failsafe - proveri veličinu fajla
+        // BULLETPROOF FAILSAFE #3 - Strict limits za shared hosting
         $file_size = filesize($image_path);
-        if ($file_size > 50 * 1024 * 1024) { // 50MB limit
+        if ($file_size > 15 * 1024 * 1024) { // 15MB
+            set_time_limit($original_time_limit);
             return array(
                 'success' => false,
-                'message' => 'Image too large (' . round($file_size / 1024 / 1024, 1) . 'MB). Please use smaller images.'
+                'message' => 'Image too large (' . round($file_size / 1024 / 1024, 1) . 'MB). Max 15MB.'
+            );
+        }
+
+        // BULLETPROOF FAILSAFE #4 - Proveri dimenzije
+        $image_info = getimagesize($image_path);
+        if ($image_info && ($image_info[0] > 3000 || $image_info[1] > 3000)) {
+            set_time_limit($original_time_limit);
+            return array(
+                'success' => false,
+                'message' => 'Image too large (' . $image_info[0] . 'x' . $image_info[1] . '). Max 3000px.'
             );
         }
 
         $backup_path = $image_path . '.backup';
-        if (!file_exists($backup_path)) {
-            if (!copy($image_path, $backup_path)) {
-                return array(
-                    'success' => false,
-                    'message' => 'Failed to create backup'
-                );
-            }
+        $copy_start = time();
+        $copy_result = @copy($image_path, $backup_path);
+
+        // FAILSAFE: ako copy traje duže od 10s ili fail
+        if ((time() - $copy_start) > 10 || !$copy_result || !file_exists($backup_path)) {
+            set_time_limit($original_time_limit);
+            return array(
+                'success' => false,
+                'message' => 'Failed to create backup - hosting file operation timeout'
+            );
         }
 
         $upload_dir = wp_upload_dir();
         $preview_dir = $upload_dir['basedir'] . '/crop-previews';
         if (!file_exists($preview_dir)) {
+            $mkdir_start = time();
             wp_mkdir_p($preview_dir);
+
+            // FAILSAFE: ako mkdir traje duže od 5s
+            if ((time() - $mkdir_start) > 5 || !is_writable($preview_dir)) {
+                set_time_limit($original_time_limit);
+                return array(
+                    'success' => false,
+                    'message' => 'Cannot create preview directory - check hosting permissions'
+                );
+            }
         }
 
         $preview_path = $preview_dir . '/preview_' . $image_id . '_' . $padding . 'px_' . time() . '.jpg';
 
-        // AUTO-DETECT LOCALHOST VS PRODUCTION
+        // AUTO-DETECT environment
         $server_name = $_SERVER['HTTP_HOST'] ?? '';
         $document_root = $_SERVER['DOCUMENT_ROOT'] ?? '';
 
@@ -660,63 +704,109 @@ class BulkImageCropper
             strpos($document_root, 'wamp') !== false ||
             strpos($document_root, 'mamp') !== false;
 
-        // GET PYTHON PATH
         $python_path = $this->get_python_path();
         $script_path = plugin_dir_path(__FILE__) . 'cropper.py';
 
         if (!file_exists($script_path)) {
+            set_time_limit($original_time_limit);
             return array(
                 'success' => false,
-                'message' => 'Python script not found at: ' . $script_path
+                'message' => 'Python script not found'
             );
         }
 
-        // BUILD COMMAND BASED ON ENVIRONMENT
+        // BULLETPROOF FAILSAFE #5 - Build command sa multiple fallback strategije
         if ($is_localhost) {
-            // LOCALHOST - jednostavna komanda
             $command = escapeshellcmd($python_path . ' ' . $script_path . ' ' .
                 escapeshellarg($image_path) . ' ' .
                 escapeshellarg($preview_path) . ' ' .
                 intval($padding));
-
-            // Windows check za 2>&1
-            if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
-                $command .= ' 2>&1';
-            } else {
-                $command .= ' 2>&1';
-            }
-
-            error_log('LOCALHOST CROP: ' . $command);
+            $command .= ' 2>&1';
+            $timeout_seconds = 45; // Localhost timeout
         } else {
-            // PRODUCTION - sa timeout i ulimit za Linux hosting
-            $command = 'timeout 75 ' .
-                escapeshellcmd($python_path . ' ' . $script_path . ' ' .
-                    escapeshellarg($image_path) . ' ' .
-                    escapeshellarg($preview_path) . ' ' .
-                    intval($padding)) . ' 2>&1';
+            // PRODUCTION - Multi-level timeout strategy
 
-            error_log('PRODUCTION CROP: ' . $command);
+            // 1. Try with system timeout first
+            $base_command = escapeshellcmd($python_path . ' ' . $script_path . ' ' .
+                escapeshellarg($image_path) . ' ' .
+                escapeshellarg($preview_path) . ' ' .
+                intval($padding));
+
+            // Try multiple timeout methods for maximum compatibility
+            $timeout_methods = array(
+                'timeout 45 ' . $base_command,     // Linux timeout
+                'gtimeout 45 ' . $base_command,    // GNU timeout
+                $base_command                      // No timeout (rely on PHP)
+            );
+
+            $timeout_seconds = 50; // Production timeout
         }
 
+        // BULLETPROOF FAILSAFE #6 - Execution sa multiple strategies
         $start_time = microtime(true);
-        exec($command, $output, $return_var);
+        $wall_time_start = time();
+        $output = array();
+        $return_var = -1;
+        $success = false;
+
+        if ($is_localhost) {
+            // LOCALHOST - Single command execution
+            exec($command, $output, $return_var);
+            $success = ($return_var === 0);
+        } else {
+            // PRODUCTION - Try multiple timeout strategies
+            foreach ($timeout_methods as $attempt => $cmd) {
+                $output = array();
+                $return_var = -1;
+
+                // BULLETPROOF FAILSAFE #7 - Wall clock timeout check
+                if ((time() - $wall_time_start) > 40) {
+                    error_log('BULLETPROOF: Wall clock timeout reached before exec');
+                    break;
+                }
+
+                exec($cmd . ' 2>&1', $output, $return_var);
+
+                if ($return_var === 0 && file_exists($preview_path)) {
+                    $success = true;
+                    error_log('BULLETPROOF: Success with timeout method ' . ($attempt + 1));
+                    break;
+                }
+
+                // Quick fail for obvious errors
+                if ($return_var === 127) { // Command not found
+                    error_log('BULLETPROOF: Python command not found, stopping retries');
+                    break;
+                }
+
+                // Don't retry if we're running out of time
+                if ((time() - $wall_time_start) > 35) {
+                    error_log('BULLETPROOF: Time running out, stopping retries');
+                    break;
+                }
+            }
+        }
+
         $execution_time = microtime(true) - $start_time;
+        $wall_time = time() - $wall_time_start;
+
+        // BULLETPROOF FAILSAFE #8 - Final timeout check
+        if ($wall_time > 45) {
+            error_log('BULLETPROOF: Hard wall clock timeout at ' . $wall_time . 's');
+            $success = false;
+            $return_var = 124; // Timeout code
+        }
+
+        // BULLETPROOF FAILSAFE #9 - Cleanup and restore
+        $shutdown_registered = true;
+        set_time_limit($original_time_limit);
 
         $log_output = implode("\n", $output);
 
-        // Enhanced logging
-        error_log('CROP RESULT: Time: ' . round($execution_time, 2) . 's, Return: ' . $return_var . ', Environment: ' . ($is_localhost ? 'LOCALHOST' : 'PRODUCTION'));
+        // Log samo važne stvari
+        error_log('BULLETPROOF CROP: Image ' . $image_id . ', Success: ' . ($success ? 'YES' : 'NO') . ', Time: ' . round($execution_time, 1) . 's, Wall: ' . $wall_time . 's');
 
-        if ($execution_time > 60) {
-            error_log('CROP WARNING: Slow execution (' . round($execution_time, 1) . 's) for image ' . $image_id);
-        }
-
-        // LOG OUTPUT for debugging (only first 500 chars to avoid log spam)
-        if (!empty($log_output)) {
-            error_log('PYTHON OUTPUT: ' . substr($log_output, 0, 500));
-        }
-
-        if ($return_var === 0 && file_exists($preview_path)) {
+        if ($success && file_exists($preview_path)) {
             $preview_url = $upload_dir['baseurl'] . '/crop-previews/' . basename($preview_path) . '?v=' . time();
             $preview_size = getimagesize($preview_path);
             $preview_dimensions = $preview_size ? $preview_size[0] . 'x' . $preview_size[1] : 'Unknown';
@@ -724,38 +814,34 @@ class BulkImageCropper
             return array(
                 'success' => true,
                 'image_id' => $image_id,
-                'message' => "Preview created with {$padding}px padding in " . round($execution_time, 1) . "s (" . ($is_localhost ? 'localhost' : 'production') . ")",
+                'message' => "Preview created with {$padding}px padding in " . round($execution_time, 1) . "s",
                 'preview_url' => $preview_url,
                 'preview_path' => $preview_path,
                 'preview_size' => $preview_dimensions,
                 'padding_used' => $padding,
                 'execution_time' => round($execution_time, 2),
                 'environment' => $is_localhost ? 'localhost' : 'production',
-                'log' => $log_output,
                 'has_backup' => file_exists($backup_path)
             );
         } else {
-            // Detaljniji error handling
-            $error_msg = 'Preview creation failed';
+            // BULLETPROOF ERROR HANDLING
+            $error_msg = 'Crop failed';
 
-            if ($return_var === 124) {
-                $error_msg = 'Timeout - operation took too long (' . ($is_localhost ? '30s' : '75s') . ' limit)';
+            if ($wall_time > 45) {
+                $error_msg = 'Hard timeout - shared hosting limit reached';
+            } elseif ($return_var === 124) {
+                $error_msg = 'System timeout - operation too slow';
             } elseif ($return_var === 137) {
-                $error_msg = 'Memory limit exceeded - image too complex';
+                $error_msg = 'Memory limit - try smaller image';
             } elseif ($return_var === 127) {
-                $error_msg = 'Python not found - check installation';
+                $error_msg = 'Python not accessible - contact support';
             } elseif ($return_var === 1) {
-                $error_msg = 'Python script error - check dependencies (PIL, NumPy)';
+                $error_msg = 'Python libraries missing (PIL/NumPy)';
             } elseif ($return_var !== 0) {
-                $error_msg = 'Python script error (code: ' . $return_var . ')';
+                $error_msg = 'Python error (code: ' . $return_var . ')';
             }
 
-            // Add python output to error if it's short and helpful
-            if (!empty($log_output) && strlen($log_output) < 200) {
-                $error_msg .= ' - ' . $log_output;
-            }
-
-            error_log('CROP FAILED: Image ' . $image_id . ', Code: ' . $return_var . ', Time: ' . round($execution_time, 1) . 's, Env: ' . ($is_localhost ? 'localhost' : 'production'));
+            error_log('BULLETPROOF CROP FAILED: Image ' . $image_id . ', Code: ' . $return_var . ', Wall time: ' . $wall_time . 's');
 
             return array(
                 'success' => false,
@@ -763,8 +849,8 @@ class BulkImageCropper
                 'message' => $error_msg,
                 'return_code' => $return_var,
                 'execution_time' => round($execution_time, 2),
-                'environment' => $is_localhost ? 'localhost' : 'production',
-                'log' => $log_output
+                'wall_time' => $wall_time,
+                'environment' => $is_localhost ? 'localhost' : 'production'
             );
         }
     }

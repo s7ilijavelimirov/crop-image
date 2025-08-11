@@ -29,7 +29,6 @@ jQuery(document).ready(function ($) {
         // Automatski reset processing nakon 5 minuta
         setInterval(function () {
             if (isProcessing && (Date.now() - lastProcessTime) > 300000) { // 5 minuta
-                console.warn('FAILSAFE: Forced reset after 5 minutes');
                 forceResetProcessing();
                 showNotification('System auto-reset after timeout', 'warning');
             }
@@ -38,7 +37,6 @@ jQuery(document).ready(function ($) {
         // Globalni error handler
         window.addEventListener('error', function (e) {
             if (e.message && e.message.includes('bulk-cropper')) {
-                console.error('FAILSAFE: JavaScript error detected', e);
                 forceResetProcessing();
             }
         });
@@ -51,25 +49,58 @@ jQuery(document).ready(function ($) {
     }
 
     function forceResetProcessing() {
+        console.log('BULLETPROOF: Force reset processing initiated');
+
+        // Cancel any active AJAX requests
+        if (window.currentCropRequest) {
+            window.currentCropRequest.abort();
+            window.currentCropRequest = null;
+        }
+
         isProcessing = false;
         clearAllTimeouts();
 
-        // Reset UI
+        // Reset ALL UI elements
         $('.button').prop('disabled', false);
         $('#crop-selected').text('Crop Selected (40px)');
         $('#live-progress').hide();
         $('#detailed-progress-section').hide();
 
-        // Reset text na dugmićima
+        // Reset all individual crop buttons
         $('.crop-individual').each(function () {
+            $(this).removeClass('failed cropping');
             let padding = parseInt($(this).closest('.image-item').find('.padding-input').val()) || 40;
-            $(this).text('Crop (' + padding + 'px)').removeClass('failed cropping');
+            $(this).text('Crop (' + padding + 'px)');
         });
 
         currentRetryCount = 0;
-        console.log('FAILSAFE: Processing force reset completed');
+        console.log('BULLETPROOF: Force reset completed');
     }
+    // BULLETPROOF FAILSAFE #9 - Enhanced page unload protection
+    window.addEventListener('beforeunload', function (e) {
+        if (isProcessing) {
+            // Cancel active operations
+            if (window.currentCropRequest) {
+                window.currentCropRequest.abort();
+            }
 
+            clearAllTimeouts();
+            forceResetProcessing();
+
+            // Browser warning
+            e.preventDefault();
+            return 'Crop operation in progress. Are you sure you want to leave?';
+        }
+    });
+
+    // BULLETPROOF FAILSAFE #10 - Global error catcher
+    window.addEventListener('error', function (e) {
+        if (e.message && e.message.includes('bulk-cropper')) {
+            console.error('BULLETPROOF: Global error detected', e);
+            forceResetProcessing();
+            showNotification('System error detected - resetting for safety', 'warning');
+        }
+    });
     function clearAllTimeouts() {
         processingTimeouts.forEach(function (timeout) {
             clearTimeout(timeout);
@@ -379,50 +410,107 @@ jQuery(document).ready(function ($) {
 
     // CROP INDIVIDUAL SA FAILSAFE
     function cropImageToResults(imageId, padding, button) {
-        if (isProcessing) return;
+        if (isProcessing) {
+            showNotification('System busy - please wait', 'warning');
+            return;
+        }
 
+        // BULLETPROOF FAILSAFE #1 - Multiple timeout layers
         isProcessing = true;
         updateProcessingTime();
-        currentRetryCount = 0;
 
         button.prop('disabled', true).text('Cropping...');
-
         updateLiveProgress(0, 100, 'Creating cropped version...');
         $('#live-progress').show();
 
-        // FAILSAFE TIMEOUT - forsiraj prekid nakon 2 minuta
-        let failsafeTimeout = safeSetTimeout(function () {
-            if (isProcessing) {
-                console.warn('FAILSAFE: Individual crop timeout for image ' + imageId);
-                button.text('Timeout').addClass('failed');
-                forceResetProcessing();
-                showNotification('Crop timeout - operation cancelled for safety', 'error');
-            }
-        }, 120000); // 2 minuta
+        let operationStarted = Date.now();
+        let timeoutTriggered = false;
 
-        $.ajax({
+        // BULLETPROOF FAILSAFE #2 - Emergency brake (hard limit)
+        let emergencyBrake = setTimeout(function () {
+            if (!timeoutTriggered) {
+                timeoutTriggered = true;
+                console.warn('BULLETPROOF: Emergency brake activated for image ' + imageId);
+
+                // Force reset everything
+                isProcessing = false;
+                button.prop('disabled', false).text('Emergency Stop').addClass('failed');
+                updateLiveProgress(100, 100, 'Emergency stop activated');
+                showNotification('Emergency stop - system protected', 'error');
+
+                // Clear any pending operations
+                clearAllTimeouts();
+            }
+        }, 70000); // 70 seconds emergency brake
+
+        // BULLETPROOF FAILSAFE #3 - Standard timeout
+        let standardTimeout = setTimeout(function () {
+            if (!timeoutTriggered) {
+                timeoutTriggered = true;
+                clearTimeout(emergencyBrake);
+
+                console.warn('BULLETPROOF: Standard timeout for image ' + imageId);
+                button.text('Timeout').addClass('failed');
+                updateLiveProgress(100, 100, 'Operation timeout');
+                showNotification('Crop timeout - try smaller image', 'warning');
+
+                // Controlled reset
+                setTimeout(function () {
+                    isProcessing = false;
+                    button.prop('disabled', false);
+                    if (!button.hasClass('failed')) {
+                        let currentPadding = parseInt(button.closest('.image-item').find('.padding-input').val()) || 40;
+                        button.text('Crop (' + currentPadding + 'px)');
+                    }
+                }, 2000);
+            }
+        }, 60000); // 60 seconds standard timeout
+
+        // BULLETPROOF FAILSAFE #4 - Heartbeat monitor
+        let heartbeatMonitor = setInterval(function () {
+            let elapsed = Date.now() - operationStarted;
+
+            if (elapsed > 50000 && !timeoutTriggered) { // 50 second warning
+                console.warn('BULLETPROOF: Long operation warning at ' + Math.round(elapsed / 1000) + 's');
+                updateLiveProgress(90, 100, 'Operation taking longer than expected...');
+            }
+
+            if (timeoutTriggered) {
+                clearInterval(heartbeatMonitor);
+            }
+        }, 5000);
+
+        // BULLETPROOF FAILSAFE #5 - AJAX with multiple safeguards
+        let ajaxRequest = $.ajax({
             url: ajax_object.ajax_url,
             type: 'POST',
-            timeout: 90000, // 90 sekundi
+            timeout: 55000, // 55 seconds AJAX timeout
             data: {
                 action: 'preview_crop',
                 image_id: imageId,
                 padding: padding,
                 nonce: ajax_object.nonce
             },
+            beforeSend: function (xhr) {
+                // Store request for potential cancellation
+                window.currentCropRequest = xhr;
+            },
             success: function (response) {
-                clearTimeout(failsafeTimeout);
+                if (timeoutTriggered) return; // Ignore if already timed out
+
+                clearTimeout(standardTimeout);
+                clearTimeout(emergencyBrake);
+                clearInterval(heartbeatMonitor);
 
                 if (response.success) {
                     let data = response.data;
-
                     addCropResultToResults(imageId, data, padding);
 
-                    button.text('Crop (' + padding + 'px)').removeClass('cropping');
+                    button.text('Crop (' + padding + 'px)').removeClass('cropping failed');
                     updateLiveProgress(100, 100, 'Cropped version created');
                     showQuickResult('Cropped version created for image ' + imageId + ' (' + padding + 'px padding)');
 
-                    safeSetTimeout(function () {
+                    setTimeout(function () {
                         $('#live-progress').fadeOut();
                     }, 2000);
                 } else {
@@ -430,45 +518,57 @@ jQuery(document).ready(function ($) {
                     updateLiveProgress(100, 100, 'Crop failed');
 
                     let errorMsg = response.data?.message || 'Unknown error';
-                    if (errorMsg.includes('timeout') || errorMsg.includes('Timeout')) {
-                        errorMsg = 'Server timeout - try smaller image';
-                    } else if (errorMsg.includes('memory') || errorMsg.includes('Memory')) {
-                        errorMsg = 'Memory limit exceeded';
-                    }
-
                     showQuickResult('Crop failed for image ' + imageId + ': ' + errorMsg, true);
                 }
             },
             error: function (xhr, status, error) {
-                clearTimeout(failsafeTimeout);
+                if (timeoutTriggered) return; // Ignore if already timed out
+
+                clearTimeout(standardTimeout);
+                clearTimeout(emergencyBrake);
+                clearInterval(heartbeatMonitor);
 
                 button.text('Error').addClass('failed');
                 updateLiveProgress(100, 100, 'Error occurred');
 
                 let errorMsg = error;
                 if (status === 'timeout') {
-                    errorMsg = 'Request timeout - server overloaded';
+                    errorMsg = 'Server timeout - shared hosting limit';
                 } else if (xhr.status === 500) {
-                    errorMsg = 'Server error - check logs';
+                    errorMsg = 'Server error - check resources';
                 } else if (xhr.status === 0) {
-                    errorMsg = 'Network error - check connection';
+                    errorMsg = 'Connection error';
                 }
 
                 showQuickResult('Crop error for image ' + imageId + ': ' + errorMsg, true);
             },
-            complete: function () {
-                clearTimeout(failsafeTimeout);
-                isProcessing = false;
+            complete: function (xhr, status) {
+                // BULLETPROOF FAILSAFE #6 - Always cleanup
+                clearTimeout(standardTimeout);
+                clearTimeout(emergencyBrake);
+                clearInterval(heartbeatMonitor);
 
-                safeSetTimeout(function () {
+                if (window.currentCropRequest === xhr) {
+                    window.currentCropRequest = null;
+                }
+
+                // Delayed reset to ensure UI stability
+                setTimeout(function () {
+                    isProcessing = false;
                     button.prop('disabled', false);
-                    if (!button.hasClass('failed')) {
+
+                    if (!timeoutTriggered && !button.hasClass('failed')) {
                         let currentPadding = parseInt(button.closest('.image-item').find('.padding-input').val()) || 40;
                         button.text('Crop (' + currentPadding + 'px)');
                     }
-                }, 3000);
+                }, 1000);
             }
         });
+
+        // BULLETPROOF FAILSAFE #7 - Store request for emergency cancellation
+        processingTimeouts.push(standardTimeout);
+        processingTimeouts.push(emergencyBrake);
+        processingTimeouts.push(heartbeatMonitor);
     }
 
     // BULK CROP SA NAPREDNIM FAILSAFE
@@ -489,17 +589,16 @@ jQuery(document).ready(function ($) {
         let completed = 0;
         let successCount = 0;
         let errorCount = 0;
-        let maxErrors = Math.ceil(total * 0.5); // Prekini ako je preko 50% grešaka
+        let maxErrors = Math.ceil(total * 0.4); // Smanjen sa 50% na 40%
 
-        // MASTER FAILSAFE - prekini bulk nakon 10 minuta
+        // KRAĆI MASTER FAILSAFE ZA SHARED HOSTING - 8 minuta
         let masterFailsafe = safeSetTimeout(function () {
             if (isProcessing) {
-                console.error('FAILSAFE: Bulk crop master timeout after 10 minutes');
                 forceResetProcessing();
-                showNotification('Bulk crop cancelled after 10 minutes for system safety', 'error');
+                showNotification('Bulk crop cancelled after 8 minutes for server stability', 'error');
                 completeBulkCropToResults(successCount, errorCount, total, padding, true);
             }
-        }, 600000); // 10 minuta
+        }, 480000); // 8 minuta umesto 10
 
         function processNext() {
             updateProcessingTime(); // Update heartbeat
@@ -507,7 +606,6 @@ jQuery(document).ready(function ($) {
             // FAILSAFE: Prekini ako previše grešaka
             if (errorCount >= maxErrors) {
                 clearTimeout(masterFailsafe);
-                console.warn('FAILSAFE: Too many errors, stopping bulk crop');
                 completeBulkCropToResults(successCount, errorCount, completed, padding, true);
                 return;
             }
@@ -525,19 +623,18 @@ jQuery(document).ready(function ($) {
             updateLiveProgress(progress, total, 'Processing ' + progress + '/' + total);
             logProgress('Processing image ' + imageId + ' (' + progress + '/' + total + ')');
 
-            // INDIVIDUAL FAILSAFE za svaki request
+            // KRAĆI INDIVIDUAL FAILSAFE - 75 sekundi
             let requestFailsafe = safeSetTimeout(function () {
-                console.warn('FAILSAFE: Individual request timeout for image ' + imageId);
                 errorCount++;
                 completed++;
                 logProgress('Image ' + imageId + ' timeout (failsafe)', true);
-                safeSetTimeout(processNext, 1000);
-            }, 90000); // 90 sekundi po slici
+                safeSetTimeout(processNext, 1500); // Duža pauza nakon timeout-a
+            }, 75000); // 75 sekundi po slici
 
             $.ajax({
                 url: ajax_object.ajax_url,
                 type: 'POST',
-                timeout: 75000, // 75 sekundi
+                timeout: 60000, // 60 sekundi AJAX timeout
                 data: {
                     action: 'preview_crop',
                     image_id: imageId,
@@ -563,8 +660,8 @@ jQuery(document).ready(function ($) {
                 },
                 complete: function () {
                     completed++;
-                    // Dodeli pauzu između zahteva za stabilnost
-                    safeSetTimeout(processNext, 800);
+                    // DUŽA PAUZA između zahteva za shared hosting stabilnost
+                    safeSetTimeout(processNext, 1200); // Povećano sa 800ms na 1200ms
                 }
             });
         }
